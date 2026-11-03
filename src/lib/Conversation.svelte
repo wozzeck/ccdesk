@@ -1,0 +1,246 @@
+<script lang="ts">
+  import { onMount, tick } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import { api, errText, type Item, type SessionView, type TranscriptAppend } from './api';
+  import Spinner from './Spinner.svelte';
+  import Transcript from './Transcript.svelte';
+  import AgentViewer from './AgentViewer.svelte';
+  import { outbox } from './outbox.svelte';
+
+  interface Props {
+    session: SessionView;
+    onToast: (m: string) => void;
+    /** Abrir el transcript de un subagente pedido desde fuera (árbol del panel izquierdo). */
+    openAgent?: { key: string; id: string; title: string; n: number } | null;
+  }
+  let { session, onToast, openAgent = null }: Props = $props();
+
+  let items = $state<Item[]>([]);
+  let startIndex = $state(0);
+  let loading = $state(false);
+  let empty = $state(false);
+  // Con algo ya enviado, el aviso de conversación vacía (que va bajado, a media pantalla) se quita
+  // al momento: si no, la burbuja provisional se pondría debajo de él, volaría hasta allí y subiría
+  // de golpe al llegar el mensaje real.
+  const sending = $derived(outbox.items.some((o) => o.key === session.key));
+  let path = '';
+  let loadedId = '';
+  let scroller: HTMLDivElement;
+  let inner: HTMLDivElement;
+
+  $effect(() => {
+    const id = session.key + '|' + session.sid;
+    if (id !== loadedId) {
+      loadedId = id;
+      load(session.key);
+    }
+  });
+
+  async function load(key: string) {
+    loading = true;
+    try {
+      const r = await api.transcriptOpen(key);
+      if (key !== session.key) return;
+      items = r?.items ?? [];
+      startIndex = r?.startIndex ?? 0;
+      path = r?.path ?? '';
+      empty = !r || r.total === 0;
+      await tick();
+      stopGlide();
+      toBottom();
+      stuck = true;
+    } catch (e) {
+      onToast(errText(e));
+    } finally {
+      loading = false;
+    }
+  }
+
+  function atBottom(): boolean {
+    return !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60;
+  }
+  function toBottom() {
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  // Si estaba abajo del todo, seguir abajo cuando cambie el alto (p. ej. al abrirse la terminal).
+  let stuck = true;
+  function onScroll() {
+    if (!gliding) stuck = atBottom();
+  }
+
+  // Lo nuevo entra deslizándose: si la vista estaba abajo, se acerca al final con una curva
+  // suave en lugar de saltar. Cada fotograma apunta al final de ese momento, así que lo que llegue
+  // a mitad (más texto, una burbuja que crece) se suma al mismo movimiento.
+  let gliding = false;
+  let glideFrame = 0;
+  function glideToBottom() {
+    if (!scroller || gliding) return;
+    gliding = true;
+    let pos = scroller.scrollTop;
+    let last = performance.now();
+    const step = (now: number) => {
+      if (!gliding || !scroller) return;
+      if (scroller.dataset.flying) {
+        gliding = false; // la animación de envío lleva el desplazamiento
+        return;
+      }
+      const target = scroller.scrollHeight - scroller.clientHeight;
+      const d = target - pos;
+      if (d <= 0.5) {
+        scroller.scrollTop = target;
+        gliding = false;
+        stuck = true;
+        return;
+      }
+      const dt = Math.min(64, now - last);
+      last = now;
+      pos += Math.max(0.5, d * (1 - Math.exp(-dt / 80)));
+      scroller.scrollTop = pos;
+      glideFrame = requestAnimationFrame(step);
+    };
+    glideFrame = requestAnimationFrame(step);
+  }
+  function stopGlide() {
+    if (!gliding) return;
+    gliding = false;
+    cancelAnimationFrame(glideFrame);
+  }
+  // El usuario manda: si sube (rueda, barra, teclado) mientras se desliza, se para ahí.
+  function userScroll(e: Event) {
+    if (!gliding) return;
+    if (e instanceof WheelEvent && e.deltaY >= 0) return;
+    if (e instanceof KeyboardEvent && !['PageUp', 'ArrowUp', 'Home'].includes(e.key)) return;
+    stopGlide();
+    stuck = false;
+  }
+
+  onMount(() => {
+    // Vigila el contenedor y también el contenido: cualquier crecimiento (mensajes nuevos,
+    // herramientas, bloques que se despliegan) mantiene la vista pegada abajo si lo estaba.
+    // El callback corre tras el layout y antes de pintar, así que no se ve el salto.
+    let lastH = scroller.clientHeight;
+    const ro = new ResizeObserver((entries) => {
+      const h = scroller.clientHeight;
+      const shrank = h < lastH;
+      lastH = h;
+      // Durante la animación de envío el desplazamiento lo lleva ella (sin saltos).
+      if (!stuck || scroller.dataset.flying) return;
+      // Si el hueco crece (ventana, terminal que se cierra) se ajusta al momento: no hay nada que
+      // deslizar. Si encoge (la caja de texto gana líneas, se abre la terminal) o crece el
+      // contenido, el final de la conversación sube deslizándose.
+      if (entries.some((en) => en.target === scroller) && !shrank) {
+        stopGlide();
+        toBottom();
+      } else glideToBottom();
+    });
+    ro.observe(scroller);
+    ro.observe(inner);
+    const uns = [
+      listen<TranscriptAppend>('transcript-append', async (e) => {
+        const p = e.payload;
+        if (p.key !== session.key || p.path !== path) return;
+        if (p.startIndex !== startIndex + items.length) {
+          load(session.key);
+          return;
+        }
+        const stick = stuck || atBottom();
+        items.push(...p.items);
+        empty = false;
+        if (stick && !scroller.dataset.flying) {
+          stuck = true;
+          await tick();
+          glideToBottom();
+        }
+      }),
+      listen<string>('transcript-available', (e) => {
+        if (e.payload === session.key) load(session.key);
+      }),
+    ];
+    return () => {
+      ro.disconnect();
+      uns.forEach((u) => u.then((f) => f()));
+    };
+  });
+
+  async function loadMore() {
+    const key = session.key;
+    const older = await api.transcriptBefore(key, startIndex, 300);
+    if (key !== session.key || !older.length) return;
+    const h0 = scroller.scrollHeight;
+    items = [...older, ...items];
+    startIndex -= older.length;
+    await tick();
+    scroller.scrollTop += scroller.scrollHeight - h0;
+  }
+
+  // Panel lateral con el transcript de un subagente. Se cierra al cambiar de sesión, y sólo
+  // entonces: cada instantánea del sondeo trae un objeto `session` nuevo (para la misma sesión), y
+  // vigilando el objeto se cerraba solo en cuanto la sesión cambiaba en algo (subagentes en marcha).
+  let viewer = $state<{ id: string; title: string } | null>(null);
+  const sessionKey = $derived(session.key);
+  $effect(() => {
+    sessionKey;
+    viewer = null;
+  });
+  function showAgent(id: string, title: string) {
+    viewer = { id, title };
+  }
+  let handledReq = 0;
+  $effect(() => {
+    const r = openAgent;
+    if (r && r.n !== handledReq && r.key === sessionKey) {
+      handledReq = r.n;
+      viewer = { id: r.id, title: r.title };
+    }
+  });
+
+</script>
+
+<div class="conv-wrap">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="conv"
+    bind:this={scroller}
+    onscroll={onScroll}
+    onwheel={userScroll}
+    onmousedown={userScroll}
+    onkeydown={userScroll}
+    ontouchstart={userScroll}
+  >
+    <div class="conv-inner" bind:this={inner}>
+      {#if startIndex > 0}
+        <button class="more" onclick={loadMore}>Cargar anteriores ({startIndex})</button>
+      {/if}
+      {#if empty && !loading && !sending}
+        <div class="empty">
+          {#if session.status === 'starting'}Arrancando Claude…{:else}Sin conversación todavía.{/if}
+        </div>
+      {/if}
+      <Transcript
+        {items}
+        {startIndex}
+        busy={session.status === 'busy'}
+        live={session.status !== 'stopped'}
+        showPending
+        sessionKey={session.key}
+        cwd={session.cwd}
+        {onToast}
+        onOpenAgent={showAgent}
+      />
+    </div>
+  </div>
+  {#if session.status === 'busy'}
+    <div class="thinking-bar"><Spinner size={12} /> Claude está trabajando…</div>
+  {/if}
+  {#if viewer}
+    <AgentViewer
+      toolUseId={viewer.id}
+      title={viewer.title}
+      live={session.status !== 'stopped'}
+      onClose={() => (viewer = null)}
+      {onToast}
+      onOpenAgent={showAgent}
+    />
+  {/if}
+</div>

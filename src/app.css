@@ -1,0 +1,2191 @@
+:root {
+  --bg: #faf9f7;
+  --panel: #f1efea;
+  --panel-2: #e8e5de;
+  --text: #1f1e1c;
+  --muted: #6b675f;
+  --border: #dcd8d0;
+  --accent: #c96442;
+  --accent-text: #ffffff;
+  --user-bg: #ece8e0;
+  --code-bg: #f3f1ec;
+  --hover: rgba(0, 0, 0, 0.05);
+  --active: rgba(201, 100, 66, 0.14);
+  --attn: #d97706;
+  --unread: #2f6fde;
+  --ok: #3f9b5a;
+  --warn: #d4a017;
+  --bad: #d14b3b;
+  --term-bg: #1d1d21;
+  --term-fg: #e6e3de;
+  --mono: 'JetBrains Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace;
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  --bg: #1f1f23;
+  --panel: #18181b;
+  --panel-2: #26262b;
+  --text: #e8e5df;
+  --muted: #9b978f;
+  --border: #303036;
+  --accent: #d97757;
+  --user-bg: #2b2b31;
+  --code-bg: #141417;
+  --hover: rgba(255, 255, 255, 0.05);
+  --active: rgba(217, 119, 87, 0.18);
+  --term-bg: #141417;
+  color-scheme: dark;
+}
+:root[data-theme='sepia'] {
+  --bg: #f5edda;
+  --panel: #ece2c9;
+  --panel-2: #e3d6b8;
+  --text: #3a2e20;
+  --muted: #7a6a54;
+  --border: #d8c9a8;
+  --accent: #b5532f;
+  --user-bg: #eadfc4;
+  --code-bg: #efe5cd;
+  --hover: rgba(90, 62, 25, 0.06);
+  --active: rgba(181, 83, 47, 0.14);
+  --term-bg: #2a241c;
+  --term-fg: #ece0c8;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 Inter, 'Noto Sans', 'Segoe UI', system-ui, sans-serif;
+  overflow: hidden;
+}
+/* Barras de desplazamiento propias en toda la app. Las superpuestas de WebKitGTK (las finas que
+   salen al desplazar) se pintan al final, por encima de todo: atravesaban la vista ampliada de las
+   imágenes, los tooltips y los menús. Con estilo propio se pintan con su elemento y respetan lo que
+   va encima. Finas y discretas: 10 px de zona, 6 px de barra visible. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background-clip: padding-box;
+  background-color: color-mix(in srgb, var(--muted) 40%, transparent);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+/* La terminal es oscura en cualquier tema. */
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.4);
+}
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+button.small {
+  padding: 2px 9px;
+  font-size: 12.5px;
+}
+button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.icon {
+  background: none;
+  border: none;
+  padding: 2px 5px;
+  color: var(--muted);
+  line-height: 1;
+}
+button.icon:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: -1px;
+}
+.muted {
+  color: var(--muted);
+}
+
+/* ── layout ── */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar) 4px 1fr;
+  grid-template-rows: 1fr auto;
+  height: 100%;
+}
+aside {
+  grid-row: 1;
+  background: var(--panel);
+  min-height: 0;
+  overflow: hidden;
+}
+.vresizer {
+  grid-row: 1;
+  cursor: col-resize;
+  background: var(--border);
+  opacity: 0.5;
+}
+.vresizer:hover {
+  background: var(--accent);
+}
+main {
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+footer {
+  grid-column: 1 / -1;
+}
+
+/* ── sidebar ── */
+.sidebar {
+  -webkit-user-select: none;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 5px 12px;
+}
+.brand {
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1px 4px 8px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 6px 0 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+  border: 1px solid transparent;
+}
+.row:hover {
+  background: var(--hover);
+}
+.row.active {
+  background: var(--active);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.row.stopped .title {
+  color: var(--muted);
+}
+/* Reordenar arrastrando: cada sesión (fila + subagentes) es un .item; las demás se apartan
+   deslizándose y la arrastrada sigue al puntero por encima de ellas. */
+.item,
+.list > .divider {
+  transition: transform 0.16s cubic-bezier(0.33, 1, 0.68, 1);
+}
+.item.lifted {
+  position: relative;
+  z-index: 2;
+  transition: none;
+  cursor: grabbing;
+}
+.item.lifted > .row {
+  background: var(--panel-2);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  opacity: 0.92;
+}
+.list.settling .item,
+.list.settling > .divider {
+  transition: none;
+}
+.title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+.when {
+  flex: none;
+  min-width: 46px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+}
+.row:hover .when,
+.row:focus-visible .when,
+.row:has(.actions :focus-visible) .when {
+  visibility: hidden;
+}
+.sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rename {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 13px;
+}
+/* Los botones ocupan el hueco de la hora sólo al pasar el ratón (o al llegar con el teclado). */
+.actions {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  bottom: 0;
+  display: none;
+  align-items: center;
+  gap: 1px;
+}
+.row:hover .actions,
+.row:focus-visible .actions,
+.row:has(.actions :focus-visible) .actions {
+  display: flex;
+}
+.actions .pin.on {
+  color: var(--accent);
+}
+.actions .go {
+  color: var(--ok);
+}
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 3px 8px;
+}
+.group {
+  width: 100%;
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+}
+.row.ext .title {
+  color: var(--muted);
+}
+.hint {
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 12px 10px;
+}
+.side-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.side-foot label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.side-foot .mins {
+  width: 58px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+/* Tooltip propio (lib/tooltip.ts): sale al momento, a diferencia del nativo. */
+.tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10000;
+  display: none;
+  max-width: min(420px, calc(100vw - 8px));
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+.tip.on {
+  display: block;
+}
+
+/* Placeholder con el gris de cada tema (el del navegador desentona, sobre todo en sepia). */
+::placeholder {
+  color: color-mix(in srgb, var(--muted) 78%, var(--bg));
+  opacity: 1;
+}
+
+/* indicadores de estado */
+.st {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* En marcha = punto lleno (verde; azul si hay respuesta sin leer). Detenida = aro hueco
+   y tenue: la que no está viva es la que menos pesa. */
+.st.idle {
+  background: var(--ok);
+  transform: scale(0.55);
+}
+.st.unread {
+  background: var(--unread);
+  transform: scale(0.75);
+}
+.st.stopped {
+  border: 1.5px solid var(--muted);
+  opacity: 0.5;
+  transform: scale(0.7);
+}
+/* En marcha con trabajo en segundo plano: el punto de «en marcha» con un arco que gira
+   despacio alrededor (más tranquilo que el spinner de «trabajando»). */
+.st.bg {
+  position: relative;
+  --core: var(--ok);
+}
+.st.bg.has-unread {
+  --core: var(--unread);
+}
+/* El punto, como degradado de la propia caja: mismo centro exacto que el aro (con un
+   elemento de 5 px en 12 px, WebKit lo redondeaba medio píxel hacia un lado). */
+.st.bg {
+  background: radial-gradient(circle closest-side, var(--core) 0 44%, transparent 52%);
+}
+.st.bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--core) 22%, transparent);
+  border-top-color: var(--core);
+  animation: spin 2.4s steps(12, end) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .st.bg::after {
+    animation: none;
+  }
+}
+.st.attn {
+  background: var(--attn);
+  color: #fff;
+  font-weight: 800;
+  font-size: 9.5px;
+  animation: pulse 1.4s steps(8, end) infinite;
+}
+.st.attn.tiny {
+  width: 13px;
+  height: 13px;
+}
+/* Animaciones a saltos: con el pintado por software cada fotograma repinta, y a 60 fps cuatro
+   indicadores costaban un 22 % de CPU (medido); a 10 fps, un 5 %. */
+.spinner {
+  flex: none;
+  display: block;
+  animation: spin 0.8s steps(8, end) infinite;
+  transform-origin: 50% 50%;
+}
+.spinner circle,
+.spinner path {
+  fill: none;
+  stroke-width: 2.4;
+}
+.spinner .track {
+  stroke: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.spinner .arc {
+  stroke: var(--accent);
+  stroke-linecap: round;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pulse {
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--attn) 30%, transparent);
+  }
+}
+
+/* menú contextual */
+.menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 230px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+.menu button {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+}
+.menu button:hover {
+  background: var(--active);
+}
+.menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 2px;
+}
+
+/* ── cabecera de sesión ── */
+.session-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 16px;
+  min-height: 40px;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.winctl {
+  display: flex;
+  gap: 2px;
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.winctl button {
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.winctl button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.winctl button.close:hover:not(:disabled) {
+  background: var(--bad);
+  color: #fff;
+}
+.winctl svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+}
+.h-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.h-title .name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Nombre en la cabecera: un clic lo vuelve editable. Los márgenes negativos compensan el relleno
+   y el borde para que el texto no se mueva al pasar de botón a campo. */
+.h-title .h-name {
+  display: flex;
+  min-width: 0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 1px 5px;
+  margin: -1px -5px;
+  cursor: text;
+}
+.h-title .h-name:hover {
+  background: var(--hover);
+  filter: none;
+}
+.h-title .h-rename {
+  font-weight: 600;
+  padding: 1px 5px;
+  margin: -2px -6px;
+  width: min(420px, 60%);
+  min-width: 140px;
+}
+.h-title .path {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* Botones de icono de la cabecera (terminal, to-do, preferencias). */
+.hbtn {
+  position: relative;
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.hbtn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.hbtn.on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.hbadge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  font-size: 9.5px;
+  line-height: 14px;
+  font-weight: 600;
+  text-align: center;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* ── conversación ── */
+.conv-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.conv {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+/* Fija al borde inferior: no se mueve con el contenido. */
+.thinking-bar {
+  position: absolute;
+  left: 0;
+  right: 12px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 22px 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: linear-gradient(to bottom, transparent, var(--bg) 45%);
+  pointer-events: none;
+}
+.msg.user.pending {
+  opacity: 0.6;
+  border: 1px dashed var(--border);
+}
+.qtag {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+  text-align: right;
+}
+.conv-inner {
+  padding: 14px 22px 38px;
+}
+.more {
+  display: block;
+  margin: 0 auto 12px;
+  font-size: 12px;
+}
+.empty,
+.welcome {
+  color: var(--muted);
+  text-align: center;
+  margin-top: 18vh;
+}
+.welcome h2 {
+  color: var(--text);
+}
+.msg {
+  position: relative;
+  margin: 14px 0;
+}
+.msg.user {
+  background: var(--user-bg);
+  border-radius: 10px;
+  padding: 9px 14px;
+  margin-left: 10%;
+}
+.msg.user .body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-tools {
+  position: absolute;
+  top: -10px;
+  right: 6px;
+  display: none;
+  gap: 3px;
+  z-index: 2;
+}
+.msg:hover .msg-tools {
+  display: flex;
+}
+.msg-tools button {
+  font-size: 11px;
+  padding: 1px 7px;
+  background: var(--panel);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+/* En los de Claude, el recuadro va 9 px por fuera (outline-offset): los botones (17 px de alto) van
+   centrados sobre su línea y acaban por encima del texto, sin tapar ni los acentos de la primera
+   línea; la hora, igual sobre la línea de abajo, a la derecha. */
+.msg.assistant .msg-tools {
+  top: -9.5px;
+  transform: translateY(-50%);
+}
+.msg.assistant .msg-tools button {
+  padding: 0 7px;
+  line-height: 15px;
+}
+.msg-time {
+  position: absolute;
+  right: 6px;
+  bottom: -9.5px;
+  transform: translateY(50%);
+  display: none;
+  z-index: 2;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 15px;
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
+}
+.msg:hover .msg-time {
+  display: inline-block;
+}
+/* Recuadro de lo que copian los botones: suave al pasar por el mensaje, marcado sobre ellos. */
+.msg[data-i] {
+  border-radius: 8px;
+}
+.msg.assistant[data-i]:hover {
+  outline: 1px solid var(--border);
+  outline-offset: 9px;
+}
+.msg.user[data-i]:hover {
+  outline: 1px solid var(--border);
+  outline-offset: 2px;
+}
+.msg[data-i]:has(> .msg-tools:hover) {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.msg-tools button:focus,
+.copy-code:focus {
+  outline: none;
+}
+.md {
+  line-height: 1.6;
+  word-break: break-word;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  line-height: 1.3;
+  margin: 1.1em 0 0.5em;
+}
+.md h1 {
+  font-size: 1.35em;
+}
+.md h2 {
+  font-size: 1.2em;
+}
+.md h3 {
+  font-size: 1.07em;
+}
+.md p,
+.md ul,
+.md ol {
+  margin: 0.55em 0;
+}
+.md li {
+  margin: 0.15em 0;
+}
+.md a {
+  color: var(--accent);
+}
+.md code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.md blockquote {
+  margin: 0.6em 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.md table {
+  border-collapse: collapse;
+  font-size: 0.93em;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.md th {
+  background: var(--panel);
+}
+.code-block {
+  position: relative;
+  margin: 0.6em 0;
+}
+.code-block pre {
+  margin: 0;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  /* Las líneas largas se parten en vez de esconderse a la derecha. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Hueco en la primera línea para la etiqueta del lenguaje y el botón «Copiar», que van encima. */
+.code-block pre::before {
+  content: '';
+  float: right;
+  width: 52px;
+  height: 1px;
+}
+.code-block:has(> .code-lang) pre::before {
+  width: 118px;
+}
+.code-block pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.code-lang {
+  position: absolute;
+  top: 4px;
+  right: 64px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.copy-code {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 11px;
+  padding: 0 7px;
+  opacity: 0;
+}
+.code-block:hover .copy-code {
+  opacity: 1;
+}
+/* Miniaturas de imágenes (bajo un grupo de herramientas o dentro de una burbuja). */
+.media-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 2px 0 8px 22px;
+}
+.msg .media-strip {
+  margin: 6px 0 2px;
+}
+/* Tamaño puesto desde MediaStrip con la proporción de la foto (sin recortar). */
+.thumb {
+  flex: none;
+  box-sizing: content-box;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-in;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.thumb-ph {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 0 10px;
+}
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.82);
+  display: grid;
+  place-items: center;
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 94vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 4px;
+}
+.lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 64px;
+  font-size: 34px;
+  line-height: 1;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+}
+.lb-nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.lb-nav.prev {
+  left: 16px;
+}
+.lb-nav.next {
+  right: 16px;
+}
+.lb-count {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ddd;
+  font-size: 12.5px;
+}
+.lb-name {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #eee;
+  font-size: 13px;
+}
+/* Imágenes adjuntas (tuyas): miniatura con su nombre debajo; en la caja de texto, más pequeñas y
+   con una × para quitarlas. */
+.att-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: 260px;
+}
+.att-name {
+  max-width: 100%;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-strip.small .att-tile {
+  max-width: 150px;
+}
+.att-rm {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 15px;
+  cursor: pointer;
+  opacity: 0;
+}
+.att-tile:hover .att-rm,
+.att-rm:focus-visible {
+  opacity: 1;
+}
+.att-rm:hover {
+  color: var(--bad);
+}
+.composer .attach-row .media-strip {
+  margin: 0 0 6px;
+}
+/* En el texto de tu mensaje, la imagen se nombra con su marca (al pulsarla, en grande). */
+.att-pill {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  border-radius: 5px;
+  background: var(--active);
+  color: var(--accent);
+  font-size: 0.92em;
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: zoom-in;
+}
+.att-pill:hover {
+  text-decoration: underline;
+}
+details.tools {
+  margin: 6px 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+details.tools > summary {
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  list-style: none;
+  padding: 3px 6px;
+  border-radius: 5px;
+}
+details.tools > summary:hover {
+  background: var(--hover);
+}
+.tool-ic {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tool-names {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tool-last {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+details.tool {
+  margin: 2px 0 2px 22px;
+}
+details.tool > summary {
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  list-style: none;
+}
+.tname {
+  font-family: var(--mono);
+  color: var(--text);
+}
+.tsum {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Ruta de fichero: tras ella, un icono para abrirlo, sólo si existe (filerefs.ts). En una fila de
+   una sola línea la ruta se recorta y el icono sigue a la vista. */
+.fref .open-file {
+  display: none;
+}
+/* inline-block (no inline-flex): así no mete un salto de línea en el texto copiado. */
+.fref[data-st='ok'] .open-file {
+  display: inline-block;
+  vertical-align: -2px;
+  margin: 0 1px 0 3px;
+  padding: 1px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  line-height: 0;
+}
+.fref[data-st='ok'] .open-file:hover {
+  color: var(--accent);
+  background: var(--hover);
+  filter: none;
+}
+.fref-line {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  vertical-align: top;
+}
+.fref-line .fp {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fref-line .open-file {
+  flex: none;
+}
+.tstate.err,
+.tout.err {
+  color: var(--bad);
+}
+pre.tin,
+pre.tout,
+pre.output {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  margin: 4px 0;
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+.cmd {
+  margin: 10px 0 4px;
+}
+.cmd code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--panel-2);
+  padding: 2px 8px;
+  border-radius: 5px;
+}
+.notice {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 12px 0;
+}
+.compact-summary {
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compact-summary > summary {
+  text-align: center;
+  cursor: pointer;
+  list-style: none;
+}
+.compact-summary > summary::-webkit-details-marker {
+  display: none;
+}
+.compact-summary > summary:hover {
+  color: var(--text);
+}
+.compact-summary[open] > summary {
+  margin-bottom: 8px;
+}
+.compact-summary > .body {
+  border-left: 2px solid var(--border);
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.thinking {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 10px 0;
+}
+
+/* ── composer ── */
+.composer {
+  border-top: 1px solid var(--border);
+  padding: 8px 22px 10px;
+}
+.composer.term-hidden {
+  display: none;
+}
+.input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.input-row textarea {
+  flex: 1;
+  resize: none;
+  min-height: 38px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+/* Sesión detenida: el aviso va centrado dentro de la caja, que sigue admitiendo texto. Al
+   enfocarla se quita (y el cursor queda a la izquierda, como siempre). */
+.input-row textarea.stopped:placeholder-shown:not(:focus) {
+  text-align: center;
+}
+.input-row textarea.stopped:focus::placeholder {
+  color: transparent;
+}
+/* Sugerencia de Claude encima de la caja vacía, con el dibujo de la tecla Tab que la acepta. */
+.ta-wrap {
+  flex: 1;
+  display: flex;
+  position: relative;
+  min-width: 0;
+}
+/* Menú de «/»: comandos de Claude Code, skills y comandos propios. */
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: min(300px, 45vh);
+  overflow-y: auto;
+  z-index: 20;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.slash-item.sel {
+  background: var(--hover);
+}
+.slash-name {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.slash-item.sel .slash-name {
+  color: var(--accent);
+}
+.slash-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* La elegida enseña la descripción entera (hasta tres líneas). */
+.slash-item.sel .slash-desc {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.slash-tag {
+  flex: none;
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.ghost-text {
+  position: absolute;
+  inset: 0;
+  padding: 9px 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  pointer-events: none;
+}
+.key {
+  /* En línea (no inline-block): así no agranda la línea y el gris cae justo donde irá el texto. */
+  display: inline;
+  margin-left: 10px;
+  padding: 0 6px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.key-arrow {
+  font-size: 12px;
+}
+.stopbtn {
+  height: 38px;
+  color: var(--bad);
+}
+.banner {
+  margin: 0 0 8px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Sola en la barra (sesión externa): centrada en ambos ejes; el margen inferior compensa el
+   padding asimétrico de .composer. */
+.banner.center {
+  justify-content: center;
+  margin-bottom: -2px;
+}
+.banner.warn {
+  color: var(--attn);
+  font-weight: 600;
+}
+
+/* ── terminal ── */
+.drawer {
+  display: none;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--term-bg);
+  min-height: 0;
+}
+/* Abierta, cubre todo el hueco de la conversación (ver .conv-area). */
+.drawer.open {
+  display: flex;
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
+.conv-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Oculta pero en su sitio: conserva el punto de lectura y no se repinta debajo. */
+.conv-area.term-full > .conv-wrap {
+  visibility: hidden;
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #b8b4ac;
+  background: color-mix(in srgb, var(--term-bg) 85%, #fff);
+  user-select: none;
+}
+.dtitle {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dhint {
+  color: #807b73;
+}
+.term-host {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 0 0 6px;
+}
+
+/* ── barra de estado ── */
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 3px 14px;
+  font-size: 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  /* visible: los desplegables abren su menú hacia arriba, fuera de la barra */
+  overflow: visible;
+  position: relative;
+  z-index: 30;
+}
+.statusbar .strong {
+  font-weight: 600;
+}
+.statusbar .spacer {
+  flex: 1;
+}
+/* Cada segmento centra en vertical su contenido: barras simples y dobles quedan alineadas. */
+.statusbar .seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.bar {
+  display: inline-block;
+  flex: none;
+  width: 60px;
+  height: 8px;
+  background: var(--panel-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.fill {
+  display: block;
+  height: 100%;
+}
+.fill.ok {
+  background: var(--ok);
+}
+.fill.warn {
+  background: var(--warn);
+}
+.fill.bad {
+  background: var(--bad);
+}
+
+/* ── modales y avisos ── */
+.modal-bg {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 60;
+}
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 20px;
+  width: min(520px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.3);
+}
+.modal h3 {
+  margin: 0;
+}
+.modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.modal .two {
+  display: flex;
+  gap: 12px;
+}
+/* Sólo crecen las de una fila: en columna, `flex: 1` deja que WebKit reparta altura de más en
+   el primer layout y luego la quite (el diálogo encogía al rato de abrirse). */
+.modal .two > label {
+  flex: 1;
+}
+.modal .buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.modal .err {
+  color: var(--bad);
+  font-size: 13px;
+}
+.small-modal p {
+  margin: 0;
+}
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 70;
+  max-width: 70vw;
+}
+
+/* ── resaltado de código (highlight.js) ── */
+.hljs-comment,
+.hljs-quote {
+  color: #8a8a8a;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag {
+  color: #b5482e;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: #2f7d3b;
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable,
+.hljs-template-variable {
+  color: #8250df;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #0b6bcb;
+}
+.hljs-attr,
+.hljs-name,
+.hljs-tag,
+.hljs-meta {
+  color: #9a6700;
+}
+.hljs-deletion {
+  color: #c4302b;
+  background: rgba(196, 48, 43, 0.08);
+}
+.hljs-addition {
+  background: rgba(47, 125, 59, 0.08);
+}
+:root[data-theme='dark'] .hljs-keyword,
+:root[data-theme='dark'] .hljs-selector-tag,
+:root[data-theme='dark'] .hljs-literal,
+:root[data-theme='dark'] .hljs-section,
+:root[data-theme='dark'] .hljs-doctag {
+  color: #ff8b6b;
+}
+:root[data-theme='dark'] .hljs-string,
+:root[data-theme='dark'] .hljs-regexp,
+:root[data-theme='dark'] .hljs-addition,
+:root[data-theme='dark'] .hljs-attribute,
+:root[data-theme='dark'] .hljs-meta .hljs-string {
+  color: #8fd18f;
+}
+:root[data-theme='dark'] .hljs-number,
+:root[data-theme='dark'] .hljs-symbol,
+:root[data-theme='dark'] .hljs-bullet,
+:root[data-theme='dark'] .hljs-variable,
+:root[data-theme='dark'] .hljs-template-variable {
+  color: #c3a6ff;
+}
+:root[data-theme='dark'] .hljs-title,
+:root[data-theme='dark'] .hljs-title.function_,
+:root[data-theme='dark'] .hljs-built_in,
+:root[data-theme='dark'] .hljs-type,
+:root[data-theme='dark'] .hljs-class .hljs-title {
+  color: #79b8ff;
+}
+:root[data-theme='dark'] .hljs-attr,
+:root[data-theme='dark'] .hljs-name,
+:root[data-theme='dark'] .hljs-tag,
+:root[data-theme='dark'] .hljs-meta {
+  color: #e3b341;
+}
+
+/* ── subagentes ── */
+.agent-card {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 7px;
+  padding: 6px 10px 6px 10px;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  font-size: 13px;
+}
+.agent-card.running {
+  border-left-color: var(--accent);
+}
+.agent-card.failed {
+  border-left-color: var(--bad);
+}
+.agent-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-ic {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+.agent-ic.ok {
+  color: var(--ok);
+}
+.agent-ic.bad {
+  color: var(--bad);
+}
+.agent-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.agent-meta {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-stats {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-head button {
+  flex: none;
+  font-size: 11.5px;
+  padding: 1px 8px;
+}
+.agent-steps {
+  margin: 4px 0 2px 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.agent-step {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.7;
+}
+.agent-step.last {
+  opacity: 1;
+}
+details.agent-sec {
+  margin: 3px 0 0 22px;
+}
+details.agent-sec > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-preview {
+  margin-left: 6px;
+  opacity: 0.8;
+}
+details.agent-sec[open] .agent-preview {
+  display: none;
+}
+.agent-prompt,
+details.agent-sec .msg {
+  margin: 6px 0 4px;
+  font-size: 13px;
+}
+.agent-prompt {
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px 10px;
+  background: var(--code-bg);
+  border-radius: 6px;
+}
+
+/* panel lateral del transcript de un subagente */
+.agent-viewer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(760px, 62%);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+}
+.agent-viewer header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 7px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.av-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.av-title {
+  flex: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.av-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 18px 20px;
+}
+.dupe {
+  flex: none;
+  color: var(--attn);
+  font-size: 12px;
+  cursor: help;
+}
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.group-row .group {
+  margin-top: 0;
+  flex: 1;
+}
+.adopt-all {
+  flex: none;
+  font-size: 11px;
+  padding: 0 7px;
+  margin-right: 4px;
+}
+
+/* ── cuerpo principal: conversación + to-do ── */
+.main-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.main-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.notes-panel {
+  width: 300px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  min-height: 0;
+}
+.notes-panel header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.np-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
+}
+.np-count {
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 9px;
+  padding: 0 7px;
+}
+.np-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.np-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 4px 2px;
+}
+.note-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px;
+}
+.note-card textarea {
+  width: 100%;
+  resize: none;
+  border: none;
+  background: transparent;
+  padding: 2px 3px;
+  min-height: 38px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.note-card textarea:focus {
+  outline: none;
+}
+.note-card:focus-within {
+  border-color: var(--accent);
+}
+.note-card.leaving {
+  visibility: hidden;
+}
+.note-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+}
+.note-age {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+.note-new {
+  align-self: stretch;
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.note-new:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.nbadge {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--accent);
+}
+.input-row .stash,
+.input-row .send {
+  width: 40px;
+  height: 38px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+/* Si no cabe en la ventana, se desplaza el contenido y no el panel entero. Los hijos no
+   encogen (en columna flexible, WebKit los aplastaría para que quepan). */
+/* Es el diálogo más alto: arranca más arriba que los demás para que quepa entero si se puede. */
+.modal-bg:has(> .modal.prefs) {
+  padding-top: 5vh;
+}
+.modal.prefs {
+  max-height: 90vh;
+}
+.prefs-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* hueco para el título del primer apartado, que asoma por encima de su borde */
+  padding: 4px 4px 2px 0;
+  margin-right: -4px;
+}
+.prefs-body > *,
+.modal.prefs > * {
+  flex-shrink: 0;
+}
+.modal.prefs > .prefs-body {
+  flex-shrink: 1;
+}
+/* Apartados con el título sobre el borde. No son <fieldset>/<legend>: WebKit les calcula de
+   más la altura en el primer layout (unos 16 px por apartado) y la corrige al rato, y el panel
+   se veía encoger. */
+.prefs .pgroup {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 14px 12px 10px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prefs .pgroup > .pgroup-title {
+  position: absolute;
+  top: -8px;
+  left: 8px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  background: var(--bg);
+}
+.prefs label.row {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+.prefs .themes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prefs .theme-opt {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+.prefs .theme-opt.sel {
+  border-color: var(--accent);
+  background: var(--active);
+}
+.prefs .theme-opt input {
+  display: none;
+}
+.sw {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.sw-light {
+  background: #faf9f7;
+}
+.sw-dark {
+  background: #1f1f23;
+}
+.sw-sepia {
+  background: #f5edda;
+}
+.sw-system {
+  background: linear-gradient(135deg, #faf9f7 50%, #1f1f23 50%);
+}
+.prefs .mins {
+  width: 64px;
+}
+.prefs .hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.prefs code {
+  font-family: var(--mono);
+  background: var(--code-bg);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.row.sub {
+  height: 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.row.sub .title {
+  font-size: 12px;
+  color: var(--muted);
+}
+.row.sub .st {
+  width: 11px;
+  height: 11px;
+}
+/* Fragmento de la conversación que coincide con la búsqueda, bajo el título de la sesión. */
+.hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0 6px 4px 26px;
+  margin-top: -2px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.hit-text {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.hit mark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.hit-n {
+  flex: none;
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.sub-type {
+  flex: none;
+  font-size: 10.5px;
+  opacity: 0.7;
+}
+/* desplegable propio de la barra inferior */
+.dd {
+  position: relative;
+  display: inline-flex;
+}
+.dd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text);
+}
+.dd-btn:hover:not(:disabled),
+.dd-btn.open {
+  border-color: var(--border);
+  background: var(--bg);
+  filter: none;
+}
+.dd-btn:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.dd-btn.strong {
+  font-weight: 600;
+}
+.dd-btn.yolo {
+  color: var(--bad);
+  font-weight: 600;
+}
+.dd-caret {
+  font-size: 9px;
+  color: var(--muted);
+}
+.dd-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 80;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.dd-opt {
+  text-align: left;
+  white-space: nowrap;
+  font-size: 12.5px;
+  padding: 3px 10px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+}
+.dd-opt:hover {
+  background: var(--active);
+  filter: none;
+}
+.dd-opt.sel {
+  font-weight: 600;
+}
+.dd-opt.yolo {
+  color: var(--bad);
+}
+.sb-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.dd-loading {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+/* mensaje recién enviado (provisional hasta que aparece en el transcript) */
+.msg.user.flying {
+  overflow: hidden;
+}
+.msg.user.flying .body {
+  white-space: pre-wrap;
+}
+/* buscador del panel izquierdo */
+.side-head .search {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 2px 8px;
+  font-size: 12.5px;
+  border-radius: 6px;
+}
+.side-head {
+  gap: 4px;
+}
+/* 7d: dos barras, arriba la de un modelo (Fable) y abajo la total (misma altura total que
+   una barra simple más el hueco, centradas igual) */
+.bar.stacked {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 10px;
+  background: none;
+  border-radius: 0;
+}
+.bar.stacked .track {
+  display: block;
+  height: 4px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bar.stacked .fill {
+  height: 100%;
+}
+.quota7 {
+  cursor: pointer;
+}
+.quota7.busy {
+  opacity: 0.6;
+}
+
+/* Destino al arrastrar ficheros encima (caja de texto, terminal, panel o tarjeta de to-do). */
+.drop-hover {
+  outline: 2px dashed var(--accent) !important;
+  outline-offset: -3px;
+  background-color: color-mix(in srgb, var(--accent) 7%, transparent);
+}

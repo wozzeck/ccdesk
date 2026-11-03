@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# cc-launch: lanza una sesión de Claude Code como ventana de la sesión tmux de ccdesk
+# (servidor tmux por defecto; nombre en Preferencias, «claude» si no se ha cambiado),
+# para que aparezca en la app aunque se cree desde cron, desde otra terminal o por SSH.
+#
+# Uso: cc-launch [-C dir] [-n nombre] [--] [argumentos de claude...]
+#   -C dir     directorio de trabajo (por defecto, el actual)
+#   -n nombre  nombre visible de la sesión
+#   Ejemplo:   cc-launch -C ~/ia -n todo -- --model sonnet "/todo-list"
+# Imprime "<clave> <session-id> <ventana>". Para entrar: tmux a -t <sesión>
+set -euo pipefail
+
+dir="$PWD"
+name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -C) dir="$2"; shift 2 ;;
+    -n) name="$2"; shift 2 ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+state="${XDG_CONFIG_HOME:-$HOME/.config}/ccdesk/state.json"
+session=$(jq -r '.settings.tmuxSession // "claude"' "$state" 2>/dev/null || echo claude)
+[[ -n "$session" && "$session" != null ]] || session=claude
+
+dir=$(cd "$dir" && pwd -P)
+sid=$(cat /proc/sys/kernel/random/uuid)
+key="cc-${sid:0:8}"
+claude_bin=$(command -v claude || echo "$HOME/.local/bin/claude")
+
+# No heredar el entorno de una sesión de Claude ni el de otro tmux.
+unset TMUX TMUX_PANE CLAUDECODE CLAUDE_PID CLAUDE_EFFORT CLAUDE_TEAMMATE_MODE AI_AGENT
+while read -r v; do unset "$v"; done < <(compgen -e | grep -E '^CLAUDE_CODE_' || true)
+
+args=(--session-id "$sid")
+[[ -n "$name" ]] && args+=(-n "$name")
+wname="${name:-claude}"
+env_args=()
+for v in DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR SSH_AUTH_SOCK PATH LANG; do
+  [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
+done
+
+if tmux has-session -t "=$session" 2>/dev/null; then
+  win=$(tmux new-window -d -t "=$session:" -n "$wname" -c "$dir" -P -F '#{window_id}' "${env_args[@]}" -- "$claude_bin" "${args[@]}" "$@")
+else
+  win=$(tmux new-session -d -s "$session" -n "$wname" -c "$dir" -x 200 -y 50 -P -F '#{window_id}' "${env_args[@]}" -- "$claude_bin" "${args[@]}" "$@")
+fi
+tmux set-option -w -t "$win" @ccdesk_key "$key"
+tmux set-option -w -t "$win" automatic-rename off
+tmux set-option -w -t "$win" allow-rename off
+echo "$key $sid $win"
