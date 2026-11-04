@@ -44,6 +44,31 @@ const md: MarkdownIt = new MarkdownIt({
   typographer: false,
 });
 
+// linkify-it se queda con lo que va pegado tras una URL si es «:» o el cierre de un énfasis:
+// «**https://…/GVPPLATF-1**: está» salía con los ** a la vista y el enlace acabado en «**:», y
+// «https://…: » enlazaba con los dos puntos. Como en GFM, la puntuación final (?!.,:*_~) no es del
+// enlace (markdown-it sólo quitaba los «*», y no si detrás venía otra cosa).
+const TAIL = new Set('?!.,:*_~');
+function trimTail(m: LinkifyMatch): LinkifyMatch {
+  let k = 0;
+  while (k < m.raw.length - 1 && TAIL.has(m.raw[m.raw.length - 1 - k])) k++;
+  if (k) {
+    m.raw = m.raw.slice(0, -k);
+    m.text = m.text.slice(0, -k);
+    m.url = m.url.slice(0, -k);
+    m.lastIndex -= k;
+  }
+  return m;
+}
+type LinkifyMatch = NonNullable<ReturnType<MarkdownIt['linkify']['matchAtStart']>>;
+const matchAtStart = md.linkify.matchAtStart.bind(md.linkify);
+md.linkify.matchAtStart = (text) => {
+  const m = matchAtStart(text);
+  return m && trimTail(m);
+};
+const matchAll = md.linkify.match.bind(md.linkify);
+md.linkify.match = (text) => matchAll(text)?.map(trimTail) ?? null;
+
 md.renderer.rules.fence = (tokens, idx) => {
   const t = tokens[idx];
   const raw = (t.info || '').trim().split(/\s+/)[0].toLowerCase();
