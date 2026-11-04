@@ -50,6 +50,7 @@ fn main() {
         search: Mutex::new(search::Index::default()),
         typing: Mutex::new(()),
         typed: Mutex::new(std::collections::HashMap::new()),
+        replies: Mutex::new(std::collections::HashMap::new()),
     });
     let poller_core = core.clone();
 

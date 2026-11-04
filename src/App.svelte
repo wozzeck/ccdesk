@@ -55,6 +55,9 @@
   let composer = $state<ReturnType<typeof Composer> | null>(null);
   let conversation = $state<ReturnType<typeof Conversation> | null>(null);
   const prevStatus: Record<string, string> = {};
+  // Marca de la última respuesta de cada sesión en la vuelta anterior, y cuando se puso a trabajar.
+  const prevReply: Record<string, number | null> = {};
+  const replyFrom: Record<string, number | null> = {};
   let layoutLoaded = false;
 
   const active = $derived<SessionView | null>(
@@ -123,18 +126,19 @@
 
   function applySnap(s: Snapshot) {
     ui.showMedia = s.settings.showMedia ?? true;
+    const working = (st: string | undefined) => st === 'busy' || ATTENTION.includes(st as any);
     for (const v of s.sessions) {
       const p = prevStatus[v.key];
-      if (
-        p &&
-        p !== v.status &&
-        v.key !== activeKey &&
-        v.status === 'idle' &&
-        (p === 'busy' || ATTENTION.includes(p as any))
-      ) {
+      if (working(v.status) && !working(p)) replyFrom[v.key] = p ? prevReply[v.key] : v.lastReply;
+      // Sin leer sólo si ha respondido algo mientras trabajaba: Claude Code compacta solo las
+      // sesiones paradas (pasa por «trabajando») y eso no trae nada nuevo que leer.
+      const from = replyFrom[v.key];
+      const replied = from == null || v.lastReply == null || v.lastReply !== from;
+      if (p && p !== v.status && v.key !== activeKey && v.status === 'idle' && working(p) && replied) {
         setUnread(v.key, true);
       }
       prevStatus[v.key] = v.status;
+      prevReply[v.key] = v.lastReply;
     }
     snap = s;
     if (!layoutLoaded) {

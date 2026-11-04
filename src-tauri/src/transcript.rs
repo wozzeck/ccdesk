@@ -342,6 +342,38 @@ fn last_activity_by(path: &Path, chunk: u64) -> Option<u64> {
     None
 }
 
+/// Respuestas de Claude añadidas al transcript entre los bytes `from` y `to`: dónde empieza la
+/// última línea `assistant` (no de subagente), si hay alguna, y hasta dónde hay líneas completas
+/// (lo que quede a medias se lee la próxima vez).
+pub fn replies_in(path: &Path, from: u64, to: u64) -> Option<(Option<u64>, u64)> {
+    let mut f = File::open(path).ok()?;
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![0u8; to.saturating_sub(from) as usize];
+    f.read_exact(&mut buf).ok()?;
+    let Some(end) = buf.iter().rposition(|&b| b == b'\n') else {
+        return Some((None, from));
+    };
+    let mut mark = None;
+    let mut start = 0;
+    for line in buf[..end].split(|&b| b == b'\n') {
+        if is_reply(line) {
+            mark = Some(from + start as u64);
+        }
+        start += line.len() + 1;
+    }
+    Some((mark, from + end as u64 + 1))
+}
+
+/// ¿Respuesta de Claude? Sólo se parsean las líneas que pueden serlo (las hay enormes).
+fn is_reply(line: &[u8]) -> bool {
+    const KEY: &[u8] = b"\"type\":\"assistant\"";
+    if !line.windows(KEY.len()).any(|w| w == KEY) {
+        return false;
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(line) else { return false };
+    v["type"] == "assistant" && v["isSidechain"] != true
+}
+
 fn line_time(line: &[u8]) -> Option<u64> {
     let s = std::str::from_utf8(line).ok()?.trim_end_matches('\r');
     // Los auxiliares se descartan sin parsearlos (los hay enormes).
@@ -1007,6 +1039,80 @@ mod tests {
         assert!(matches!(&c.items[0], Item::User { text, images, .. } if text == "mira" && images.len() == 1));
         let urls: Vec<String> = imgs.iter().map(|r| image_at(&p, r.offset, r.n).unwrap()).collect();
         assert_eq!(urls, ["data:image/png;base64,AAA", "data:image/jpeg;base64,BBB", "data:image/jpeg;base64,CCC"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Respuestas de Claude añadidas al transcript: la última que no es de un subagente, y lo que
+    /// queda a medias para la próxima vez. Una autocompactación no trae ninguna.
+    #[test]
+    fn replies_appended() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("ccdesk-replies-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("t.jsonl");
+        let user = r#"{"parentUuid":"a","type":"user","message":{"role":"user","content":"hola"},"timestamp":"t"}"#;
+        let reply = r#"{"parentUuid":"b","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]},"type":"assistant","timestamp":"t"}"#;
+        let side = r#"{"parentUuid":"c","isSidechain":true,"message":{"role":"assistant","content":[]},"type":"assistant","timestamp":"t"}"#;
+        let meta = r#"{"type":"last-prompt","lastPrompt":"hola \"type\":\"assistant\""}"#;
+        let quoted = r#"{"parentUuid":"d","type":"user","message":{"role":"user","content":"pega esto: {\"type\":\"assistant\"}"},"timestamp":"t"}"#;
+        let compact = r#"{"parentUuid":null,"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto"},"timestamp":"t"}"#;
+        let summary = r#"{"parentUuid":"e","type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"},"timestamp":"t"}"#;
+        let body = format!("{user}\n{reply}\n{side}\n{meta}\n{quoted}\n{}", &reply[..40]);
+        std::fs::write(&p, &body).unwrap();
+        let len = body.len() as u64;
+        let reply_at = (user.len() + 1) as u64;
+        let partial_at = len - 40;
+        // La de subagente, el texto citado y los auxiliares no cuentan; la línea a medias, aún no.
+        assert_eq!(replies_in(&p, 0, len), Some((Some(reply_at), partial_at)));
+        // Se completa: es otra respuesta.
+        let rest = format!("{}\n", &reply[40..]);
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(rest.as_bytes()).unwrap();
+        let len = len + rest.len() as u64;
+        assert_eq!(replies_in(&p, partial_at, len), Some((Some(partial_at), len)));
+        // La autocompactación (con la sesión parada) no trae respuesta.
+        let more = format!("{compact}\n{summary}\n{meta}\n");
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(more.as_bytes()).unwrap();
+        assert_eq!(replies_in(&p, len, len + more.len() as u64), Some((None, len + more.len() as u64)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Interrumpir antes de la respuesta: Claude Code deja el mensaje en el JSONL, pero sigue la
+    /// conversación desde el anterior (lo siguiente cuelga del mismo padre).
+    #[test]
+    fn withdrawn_message() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("ccdesk-wd-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let par = |p: &str| if p.is_empty() { "null".to_string() } else { format!("\"{p}\"") };
+        let user = |u: &str, p: &str, text: &str| {
+            format!(r#"{{"parentUuid":{},"isSidechain":false,"type":"user","message":{{"role":"user","content":"{text}"}},"uuid":"{u}","timestamp":"t"}}"#, par(p))
+        };
+        let asst = |u: &str, p: &str| {
+            format!(r#"{{"parentUuid":{},"isSidechain":false,"type":"assistant","message":{{"id":"m{u}","role":"assistant","content":[{{"type":"text","text":"ok"}}]}},"uuid":"{u}","timestamp":"t"}}"#, par(p))
+        };
+        let hook = |u: &str, p: &str| {
+            format!(r#"{{"parentUuid":{},"isSidechain":false,"attachment":{{"type":"hook_success"}},"type":"attachment","uuid":"{u}","timestamp":"t"}}"#, par(p))
+        };
+        let aux = r#"{"type":"file-history-snapshot","messageId":"x","snapshot":{}}"#.to_string();
+        let marks = |c: &Cache| -> Vec<usize> {
+            c.items.iter().filter_map(|it| match it { Item::Withdrawn { of, .. } => Some(*of), _ => None }).collect()
+        };
+        // «dos» (con el adjunto de un hook) se interrumpe; lo siguiente cuelga, como él, de «b».
+        let p = d.join("t.jsonl");
+        std::fs::write(&p, [user("a", "", "uno"), asst("b", "a"), user("c", "b", "dos"), hook("h", "c"), aux].join("\n") + "\n").unwrap();
+        let mut c = Cache::open("k", "s", &p).unwrap();
+        assert!(marks(&c).is_empty());
+        let dos = c.items.iter().position(|it| matches!(it, Item::User { text, .. } if text == "dos")).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        writeln!(f, "{}\n{}\n{}", user("d", "b", "dos bis"), asst("e", "d"), user("g", "e", "tres")).unwrap();
+        drop(f);
+        c.refresh().unwrap();
+        assert_eq!(marks(&c), [dos]);
+        // Interrumpido con la respuesta ya en marcha: Claude Code lo apunta y sigue desde ahí.
+        let q = d.join("q.jsonl");
+        let int = r#"{"parentUuid":"c","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"uuid":"i","timestamp":"t"}"#;
+        std::fs::write(&q, [user("a", "", "uno"), asst("b", "a"), user("c", "b", "dos"), int.to_string(), user("d", "i", "otra")].join("\n") + "\n").unwrap();
+        assert!(marks(&Cache::open("k", "s", &q).unwrap()).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 

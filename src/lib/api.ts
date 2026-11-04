@@ -29,6 +29,8 @@ export interface SessionView {
   agents: AgentRow[];
   /** Claude espera, pero algo suyo sigue corriendo (bash en segundo plano, Monitor, subagentes). */
   background: boolean;
+  /** Marca de la última respuesta de Claude: cambia cuando responde algo (null si no se sabe). */
+  lastReply: number | null;
 }
 
 export interface AgentRow {

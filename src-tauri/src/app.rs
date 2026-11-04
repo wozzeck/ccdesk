@@ -47,6 +47,18 @@ pub struct Core {
     /// Veces que se ha tecleado en la caja de cada sesión: lo que espera tras un Esc (`interrupt`)
     /// sabe así si entretanto se ha enviado algo, que ya se ocupa de la caja.
     pub typed: Mutex<HashMap<String, u64>>,
+    /// Lectura del transcript de cada sesión (por sid) para `last_reply`.
+    pub replies: Mutex<HashMap<String, ReplyTail>>,
+}
+
+#[derive(Default)]
+pub struct ReplyTail {
+    path: Option<PathBuf>,
+    /// Cuándo se buscó el transcript sin encontrarlo (una sesión nueva no lo tiene aún).
+    looked: Option<Instant>,
+    /// Hasta dónde se ha leído.
+    offset: u64,
+    mark: Option<u64>,
 }
 
 #[derive(Default)]
@@ -109,6 +121,10 @@ pub struct SessionView {
     /// Claude espera, pero algo suyo sigue corriendo (bash en segundo plano, Monitor,
     /// subagentes): detenerla lo cortaría.
     pub background: bool,
+    /// Marca de la última respuesta de Claude en su conversación (`last_reply`): cambia cuando
+    /// responde algo. Con ella la interfaz no toma por respuesta nueva lo que sólo pasó por
+    /// «trabajando» (Claude Code compacta solo las sesiones paradas).
+    pub last_reply: Option<u64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -816,6 +832,7 @@ pub fn build(core: &Core) -> Snapshot {
                 notes: 0,
                 agents: vec![],
                 background: false,
+                last_reply: None,
             },
         );
     }
@@ -862,6 +879,7 @@ pub fn build(core: &Core) -> Snapshot {
                 notes: 0,
                 agents: vec![],
                 background: false,
+                last_reply: None,
             },
         );
     }
@@ -898,6 +916,7 @@ pub fn build(core: &Core) -> Snapshot {
             notes: 0,
             agents: vec![],
             background: false,
+            last_reply: None,
         });
     }
 
@@ -949,6 +968,7 @@ pub fn build(core: &Core) -> Snapshot {
         v.notes = p.notes.get(&v.key).map_or(0, |n| n.len());
         if v.status != "stopped" && !v.sid.is_empty() {
             v.agents = running_agents(core, &v.sid, &v.cwd);
+            v.last_reply = last_reply(core, &v.sid, &v.cwd);
         }
         if v.status == "idle" {
             let reg = v.pid.and_then(|pid| regs.iter().find(|r| r.pid == pid));
@@ -1038,6 +1058,36 @@ fn running_agents(core: &Core, sid: &str, cwd: &str) -> Vec<AgentRow> {
     let rows = dir.as_deref().map(scan_agents).unwrap_or_default();
     core.running_agents.lock().unwrap().insert(sid.to_string(), (now, rows.clone()));
     rows
+}
+
+/// Marca de la última respuesta de Claude en la conversación de `sid`: dónde empieza en el
+/// transcript su última línea `assistant`. Sólo importa cuándo cambia, así que lo que ya había al
+/// ver la sesión por primera vez no se lee (la marca empieza siendo el tamaño de entonces); después,
+/// en cada vuelta del sondeo, sólo lo añadido.
+fn last_reply(core: &Core, sid: &str, cwd: &str) -> Option<u64> {
+    let mut all = core.replies.lock().unwrap();
+    let t = all.entry(sid.to_string()).or_default();
+    let Some(path) = t.path.clone() else {
+        // Una sesión nueva no tiene transcript hasta su primer mensaje: se vuelve a mirar al rato.
+        if t.looked.is_some_and(|i| i.elapsed() < Duration::from_secs(5)) {
+            return t.mark;
+        }
+        t.looked = Some(Instant::now());
+        let p = transcript_of(sid, cwd)?;
+        let len = std::fs::metadata(&p).ok()?.len();
+        (t.path, t.offset, t.mark) = (Some(p), len, Some(len));
+        return t.mark;
+    };
+    let len = std::fs::metadata(&path).map_or(0, |m| m.len());
+    if len < t.offset {
+        (t.offset, t.mark) = (len, Some(len)); // rehecho: cuenta como cambio
+    } else if len > t.offset {
+        if let Some((mark, done)) = transcript::replies_in(&path, t.offset, len) {
+            t.mark = mark.or(t.mark);
+            t.offset = done;
+        }
+    }
+    t.mark
 }
 
 /// Subagentes en marcha en una carpeta `subagents/`.
@@ -3189,7 +3239,7 @@ while True:
         let v = |key: &str, last: u64| super::SessionView {
             key: key.into(), sid: String::new(), cwd: String::new(), title: key.into(), status: "idle".into(),
             managed: true, external_kind: None, pinned: false, exempt: false, started_at: 0, last_activity: last,
-            stopped_at: None, pid: None, tmux_pane: None, dupes: vec![], location: None, notes: 0, agents: vec![], background: false,
+            stopped_at: None, pid: None, tmux_pane: None, dupes: vec![], location: None, notes: 0, agents: vec![], background: false, last_reply: None,
         };
         let views = || std::collections::HashMap::from([("p1", 10), ("p2", 99), ("a", 5), ("b", 50), ("c", 50), ("d", 70)]
             .map(|(k, t)| (k.to_string(), v(k, t))));
