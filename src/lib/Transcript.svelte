@@ -88,7 +88,7 @@
   );
 
   type Row =
-    | { t: 'user'; i: number; text: string; midTurn: boolean; images: ImgRef[]; withdrawn: boolean }
+    | { t: 'user'; i: number; text: string; midTurn: boolean; images: ImgRef[]; withdrawn: boolean; at: number }
     | { t: 'assistant'; i: number; text: string; cwd: string; at: number }
     | { t: 'tools'; i: number; tools: { item: ToolItem; result?: ResultItem }[] }
     | {
@@ -131,6 +131,7 @@
             midTurn: it.midTurn,
             images: it.images ?? [],
             withdrawn: withdrawn.has(i) || i === cutOff,
+            at: Date.parse(it.ts) || 0,
           });
           break;
         case 'assistant': {
@@ -199,12 +200,18 @@
   // terminal y no se sabe qué dice, no se enseña (pero sigue contando para el orden de la cola).
   const pending = $derived.by(() => {
     if (!showPending) return [];
-    const q: { raw: string; text: string; show: boolean; id: number }[] = [];
+    const q: { raw: string; text: string; show: boolean; id: number; at: number }[] = [];
     for (const [idx, it] of items.entries()) {
       if (it.kind === 'queueAdd') {
         const text = it.text || blankText.get(idx) || outbox.recall(sessionKey, it.ts) || '';
         // Mientras vuela la burbuja provisional, ésta espera (pero ocupa su sitio en la cola).
-        q.push({ raw: it.text, text, show: !it.system && !!text.trim() && !held.has(idx), id: startIndex + idx });
+        q.push({
+          raw: it.text,
+          text,
+          show: !it.system && !!text.trim() && !held.has(idx),
+          id: startIndex + idx,
+          at: Date.parse(it.ts) || 0,
+        });
       } else if (it.kind === 'queueDequeue') q.shift();
       else if (it.kind === 'queueClear') q.length = 0;
       else if (it.kind === 'queueRemove') {
@@ -440,6 +447,9 @@
      estado resuelto de la anterior). -->
 {#snippet fileRef(text: string, ref: string, line: boolean)}{#key ref}<span class="fref" class:fref-line={line} data-ref={ref}><span class="fp">{text}</span><button class="open-file" type="button" tabindex="-1" aria-label="Abrir">{@html OPEN_ICON}</button></span>{/key}{/snippet}
 
+<!-- Pastilla con la hora del mensaje (tuyo o de Claude): sale al pasar por encima. -->
+{#snippet when(at: number)}{#if at}<span class="msg-time" title={fullDate(at)}>{ago(at, clock.now)}</span>{/if}{/snippet}
+
 <!-- Texto de un mensaje tuyo: las rutas de imágenes (pegadas, soltadas…) se ven como su marca
      («imagen 1», «foto.jpg»), que al pulsarla la enseña en grande, y su miniatura con el nombre va
      debajo; las demás rutas, con su icono de abrir. -->
@@ -471,6 +481,7 @@
             interrumpida
           </div>
         {/if}
+        {@render when(row.at)}
       </div>
     {:else if row.t === 'assistant'}
       <div class="msg assistant" data-i={row.i} data-cwd={row.cwd || undefined}>
@@ -480,7 +491,7 @@
           <button data-act="md" title="Copiar el markdown original">MD</button>
         </div>
         <div class="body md">{@html renderMarkdown(row.text)}</div>
-        {#if row.at}<span class="msg-time" title={fullDate(row.at)}>{ago(row.at, clock.now)}</span>{/if}
+        {@render when(row.at)}
       </div>
     {:else if row.t === 'tools'}
       {@const running = row.tools.some((t) => !t.result)}
@@ -542,12 +553,14 @@
     <div class="msg user pending" use:morph={bubbleId(p.text)}>
       {@render userBody(p.text, [])}
       <div class="qtag">en cola: Claude lo leerá en cuanto pueda</div>
+      {@render when(p.at)}
     </div>
   {/each}
   {#each outgoing as o (o.id)}
     <div class="msg user outgoing" use:flyIn={o} use:morph={bubbleId(o.text)}>
       {@render userBody(o.text, [])}
       {#if o.waiting}<div class="qtag">se enviará en cuanto Claude arranque</div>{/if}
+      {@render when(o.at)}
     </div>
   {/each}
 </div>

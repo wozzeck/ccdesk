@@ -844,6 +844,10 @@ footer {
 .msg:hover .msg-time {
   display: inline-block;
 }
+/* En tus mensajes, sobre su recuadro (más pegado: 2 px en vez de 9). */
+.msg.user .msg-time {
+  bottom: -2.5px;
+}
 /* Recuadro de lo que copian los botones: suave al pasar por el mensaje, marcado sobre ellos. */
 .msg[data-i] {
   border-radius: 8px;
