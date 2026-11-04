@@ -12,7 +12,10 @@
   --hover: rgba(0, 0, 0, 0.05);
   --active: rgba(201, 100, 66, 0.14);
   --attn: #d97706;
-  --unread: #2f6fde;
+  /* Marcas de las sesiones: en marcha, neutra (como el texto secundario); una respuesta sin
+     leer, en el rojizo de cada tema. */
+  --live: var(--muted);
+  --unread: #d9542c;
   --ok: #3f9b5a;
   --warn: #d4a017;
   --bad: #d14b3b;
@@ -33,6 +36,7 @@
   --code-bg: #141417;
   --hover: rgba(255, 255, 255, 0.05);
   --active: rgba(217, 119, 87, 0.18);
+  --unread: #f0714d;
   --term-bg: #141417;
   color-scheme: dark;
 }
@@ -48,6 +52,7 @@
   --code-bg: #efe5cd;
   --hover: rgba(90, 62, 25, 0.06);
   --active: rgba(181, 83, 47, 0.14);
+  --unread: #b8432a;
   --term-bg: #2a241c;
   --term-fg: #ece0c8;
   color-scheme: light;
@@ -400,34 +405,37 @@ footer {
   align-items: center;
   justify-content: center;
 }
-/* En marcha = punto lleno (verde; azul si hay respuesta sin leer). Detenida = aro hueco
-   y tenue: la que no está viva es la que menos pesa. */
+/* En marcha = círculo lleno; detenida = el mismo círculo, hueco y tenue (la que no está viva es
+   la que menos pesa). Con una respuesta sin leer, más grande y en color: lo que hay que ver de un
+   vistazo. */
 .st.idle {
-  background: var(--ok);
-  transform: scale(0.55);
+  background: var(--live);
+  transform: scale(0.6);
 }
 .st.unread {
   background: var(--unread);
-  transform: scale(0.75);
+  transform: scale(0.875);
 }
 .st.stopped {
-  border: 1.5px solid var(--muted);
-  opacity: 0.5;
-  transform: scale(0.7);
+  border: 1.5px solid var(--live);
+  opacity: 0.6;
+  transform: scale(0.65);
 }
 /* En marcha con trabajo en segundo plano: el punto de «en marcha» con un arco que gira
    despacio alrededor (más tranquilo que el spinner de «trabajando»). */
 .st.bg {
   position: relative;
-  --core: var(--ok);
+  --core: var(--live);
+  --dot: 44%;
 }
 .st.bg.has-unread {
   --core: var(--unread);
+  --dot: 56%; /* la novedad, más grande también aquí */
 }
 /* El punto, como degradado de la propia caja: mismo centro exacto que el aro (con un
    elemento de 5 px en 12 px, WebKit lo redondeaba medio píxel hacia un lado). */
 .st.bg {
-  background: radial-gradient(circle closest-side, var(--core) 0 44%, transparent 52%);
+  background: radial-gradient(circle closest-side, var(--core) 0 var(--dot), transparent calc(var(--dot) + 8%));
 }
 .st.bg::after {
   content: '';
