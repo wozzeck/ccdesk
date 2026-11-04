@@ -4,6 +4,7 @@ mod paths;
 mod pty;
 mod registry;
 mod search;
+mod single;
 mod slash;
 mod state;
 mod tmux;
@@ -24,6 +25,27 @@ fn window_flags() -> StateFlags {
 }
 
 fn main() {
+    // Una sola copia: si ya hay otra abierta, trae su ventana al frente y esta acaba aquí, sin
+    // haber tocado nada.
+    let startup_id = std::env::var("DESKTOP_STARTUP_ID").ok();
+    let instance = match single::claim(&paths::config_dir(), startup_id.as_deref()) {
+        Ok(single::Claim::First(listener)) => Some(listener),
+        Ok(single::Claim::Raised) => {
+            eprintln!("ccdesk ya estaba abierto: traigo su ventana al frente");
+            return;
+        }
+        Ok(single::Claim::NoAnswer) => {
+            app::log("ya hay otro ccdesk abierto y no contesta: no abro otro");
+            let _ = std::process::Command::new("notify-send")
+                .args(["ccdesk", "Ya está abierto, pero no contesta."])
+                .status();
+            std::process::exit(1);
+        }
+        Err(e) => {
+            app::log(&format!("no he podido comprobar si ya había otro ccdesk abierto: {e}"));
+            None
+        }
+    };
     // Sin compositing por GPU WebKitGTK ocupa ~25 MB menos; esta UI no lo necesita.
     if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
@@ -71,6 +93,10 @@ fn main() {
         })
         .manage(core)
         .setup(move |app| {
+            if let Some(listener) = instance {
+                let handle = app.handle().clone();
+                single::serve(listener, move |id| single::bring_to_front(&handle, id));
+            }
             app::spawn_poller(app.handle().clone(), poller_core.clone());
             // Índice de búsqueda en las conversaciones (hilo propio, al día cada 10 s) y precarga
             // de los comandos de Claude Code, en segundo plano y ya con la lista hecha.
