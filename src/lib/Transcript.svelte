@@ -27,6 +27,8 @@
     busy: boolean;
     /** El proceso sigue vivo. */
     live: boolean;
+    /** Claude espera un mensaje (para ver si el último tuyo, sin respuesta, se interrumpió). */
+    idle?: boolean;
     /** Enseñar los mensajes en cola (sólo en la conversación principal). */
     showPending?: boolean;
     /** Clave de la sesión (para las burbujas provisionales de lo recién enviado). */
@@ -41,6 +43,7 @@
     startIndex,
     busy,
     live,
+    idle = false,
     showPending = false,
     sessionKey = '',
     cwd = '',
@@ -53,8 +56,39 @@
   type AgentItem = Extract<Item, { kind: 'agent' }>;
   type AgentResult = Extract<Item, { kind: 'agentResult' }>;
   type TaskNotice = Extract<Item, { kind: 'taskNotice' }>;
+  // Mensajes tuyos interrumpidos antes de que Claude respondiera: Claude Code los devuelve a su caja
+  // de texto y sigue la conversación desde el anterior. El backend lo ve en el árbol del JSONL al
+  // llegar lo siguiente; hasta entonces, el último sin respuesta con Claude esperando también lo
+  // está (con unos segundos de margen: el estado «trabajando» llega algo después que el mensaje).
+  const withdrawn = $derived(new Set(items.flatMap((it) => (it.kind === 'withdrawn' ? [it.of] : []))));
+  const QUIET = new Set<Item['kind']>(['queueAdd', 'queueDequeue', 'queueRemove', 'queueClear', 'withdrawn']);
+  const lastUser = $derived.by(() => {
+    if (!idle) return -1;
+    for (let k = items.length - 1; k >= 0; k--) {
+      const it = items[k];
+      if (QUIET.has(it.kind)) continue;
+      return it.kind === 'user' && !it.midTurn ? k : -1;
+    }
+    return -1;
+  });
+  const GRACE = 3000;
+  let tick = $state(Date.now());
+  $effect(() => {
+    if (lastUser < 0) return;
+    const left = Date.parse(items[lastUser].ts) + GRACE - Date.now();
+    if (!(left > 0)) {
+      tick = Date.now();
+      return;
+    }
+    const t = setTimeout(() => (tick = Date.now()), left + 50);
+    return () => clearTimeout(t);
+  });
+  const cutOff = $derived(
+    lastUser >= 0 && tick >= Date.parse(items[lastUser].ts) + GRACE ? startIndex + lastUser : -1,
+  );
+
   type Row =
-    | { t: 'user'; i: number; text: string; midTurn: boolean; images: ImgRef[] }
+    | { t: 'user'; i: number; text: string; midTurn: boolean; images: ImgRef[]; withdrawn: boolean }
     | { t: 'assistant'; i: number; text: string; cwd: string; at: number }
     | { t: 'tools'; i: number; tools: { item: ToolItem; result?: ResultItem }[] }
     | {
@@ -90,7 +124,14 @@
       if (held.has(idx)) return;
       switch (it.kind) {
         case 'user':
-          out.push({ t: 'user', i, text: it.text, midTurn: it.midTurn, images: it.images ?? [] });
+          out.push({
+            t: 'user',
+            i,
+            text: it.text,
+            midTurn: it.midTurn,
+            images: it.images ?? [],
+            withdrawn: withdrawn.has(i) || i === cutOff,
+          });
           break;
         case 'assistant': {
           const last = out[out.length - 1];
@@ -415,10 +456,21 @@
 <div class="transcript" bind:this={root} onclick={onClick} onmousedown={onMouseDown}>
   {#each rows as row (row.i)}
     {#if row.t === 'user'}
-      <div class="msg user" class:midturn={row.midTurn} data-i={row.i} use:morph={bubbleId(row.text)}>
+      <div
+        class="msg user"
+        class:midturn={row.midTurn}
+        class:withdrawn={row.withdrawn}
+        data-i={row.i}
+        use:morph={bubbleId(row.text)}
+      >
         <div class="msg-tools"><button data-act="plain" title="Copiar texto">Copiar</button></div>
         {@render userBody(row.text, row.images)}
         {#if row.midTurn}<div class="qtag">enviado mientras trabajaba</div>{/if}
+        {#if row.withdrawn}
+          <div class="qtag" title="La interrumpiste antes de que Claude respondiera: no forma parte de la conversación">
+            interrumpida
+          </div>
+        {/if}
       </div>
     {:else if row.t === 'assistant'}
       <div class="msg assistant" data-i={row.i} data-cwd={row.cwd || undefined}>

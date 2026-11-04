@@ -147,6 +147,26 @@ pub enum Item {
     QueueRemove { ts: String, text: String },
     /// `popAll`: el usuario recuperó a la caja de entrada todo lo que tenía en cola.
     QueueClear { ts: String },
+    /// Tu mensaje `of` (índice en `items`) se quedó fuera de la conversación: lo interrumpiste
+    /// antes de que Claude respondiera (Claude Code lo devuelve a su caja y sigue desde el anterior).
+    Withdrawn { ts: String, of: usize },
+}
+
+/// Lo que hace falta de un registro para seguir el árbol de la conversación.
+struct Link {
+    uuid: String,
+    parent: String,
+    kind: String,
+    ts: String,
+}
+
+/// Tu último mensaje mientras no tenga respuesta de Claude, con lo que cuelga de él (adjuntos de
+/// hooks, avisos…).
+struct Pending {
+    uuid: String,
+    parent: String,
+    index: usize,
+    desc: Vec<String>,
 }
 
 /// Localiza el JSONL: `transcript_path` del statusline > cwd codificado > búsqueda.
@@ -180,6 +200,7 @@ pub struct Cache {
     pub items: Vec<Item>,
     /// Los ficheros de subagentes marcan todas sus líneas como `isSidechain`.
     sidechain: bool,
+    pending: Option<Pending>,
 }
 
 impl Cache {
@@ -195,9 +216,39 @@ impl Cache {
             offset: 0,
             items: Vec::new(),
             sidechain,
+            pending: None,
         };
         c.refresh()?;
         Ok(c)
+    }
+
+    /// Sigue el árbol para ver si tu último mensaje se quedó fuera: si, sin respuesta de Claude, la
+    /// conversación sigue desde su padre, es que lo interrumpiste antes de que respondiera. Devuelve
+    /// la marca, que va delante de los items de esta línea.
+    fn follow(&mut self, l: &Link, items: &[Item]) -> Option<Item> {
+        let mut mark = None;
+        let mut answered = false;
+        if let Some(p) = self.pending.as_mut() {
+            if l.parent == p.uuid || p.desc.contains(&l.parent) {
+                if l.kind == "assistant" {
+                    answered = true;
+                } else {
+                    p.desc.push(l.uuid.clone());
+                }
+            } else if l.kind == "user" && l.parent == p.parent {
+                mark = Some(Item::Withdrawn { ts: l.ts.clone(), of: p.index });
+            }
+        }
+        if answered || mark.is_some() {
+            self.pending = None;
+        }
+        if l.kind == "user" {
+            if let Some(k) = items.iter().position(|it| matches!(it, Item::User { mid_turn: false, .. })) {
+                let index = self.items.len() + usize::from(mark.is_some()) + k;
+                self.pending = Some(Pending { uuid: l.uuid.clone(), parent: l.parent.clone(), index, desc: Vec::new() });
+            }
+        }
+        mark
     }
 
     /// Lee las líneas completas nuevas desde el último offset y las añade a `items`; devuelve
@@ -208,6 +259,7 @@ impl Cache {
         if len < self.offset {
             self.offset = 0;
             self.items.clear();
+            self.pending = None;
         }
         if len == self.offset {
             return Ok(0);
@@ -232,8 +284,11 @@ impl Cache {
                 if s.is_empty() {
                     continue;
                 }
-                let mut items = parse_line_opts(s, self.sidechain);
+                let (mut items, link) = parse_line_link(s, self.sidechain);
                 locate_images(&mut items, &path, start);
+                if let Some(mark) = link.and_then(|l| self.follow(&l, &items)) {
+                    self.items.push(mark);
+                }
                 self.items.extend(items);
             }
         }
@@ -351,18 +406,29 @@ pub fn parse_line(line: &str) -> Vec<Item> {
 }
 
 pub fn parse_line_opts(line: &str, sidechain: bool) -> Vec<Item> {
+    parse_line_link(line, sidechain).0
+}
+
+/// Los items de una línea y, si es un registro de la conversación, su sitio en el árbol.
+fn parse_line_link(line: &str, sidechain: bool) -> (Vec<Item>, Option<Link>) {
     if let Some(t) = quick_type(line) {
         if !matches!(t, "user" | "assistant" | "system" | "queue-operation") {
-            return vec![];
+            return (vec![], None);
         }
     }
     let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return vec![];
+        return (vec![], None);
     };
     if !sidechain && v["isSidechain"].as_bool() == Some(true) {
-        return vec![];
+        return (vec![], None);
     }
-    parse_value(&v)
+    let link = v["uuid"].as_str().map(|u| Link {
+        uuid: u.to_string(),
+        parent: v["parentUuid"].as_str().unwrap_or("").to_string(),
+        kind: v["type"].as_str().unwrap_or("").to_string(),
+        ts: v["timestamp"].as_str().unwrap_or("").to_string(),
+    });
+    (parse_value(&v), link)
 }
 
 fn parse_value(v: &Value) -> Vec<Item> {

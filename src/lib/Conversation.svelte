@@ -251,6 +251,7 @@
         {startIndex}
         busy={session.status === 'busy'}
         live={session.status !== 'stopped'}
+        idle={session.status === 'idle'}
         showPending
         sessionKey={session.key}
         cwd={session.cwd}

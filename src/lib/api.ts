@@ -171,7 +171,9 @@ export type Item =
   | { kind: 'queueAdd'; ts: string; text: string; system: boolean }
   | { kind: 'queueDequeue'; ts: string }
   | { kind: 'queueRemove'; ts: string; text: string }
-  | { kind: 'queueClear'; ts: string };
+  | { kind: 'queueClear'; ts: string }
+  /** Tu mensaje `of` (índice global) se quedó fuera: lo interrumpiste antes de que respondiera. */
+  | { kind: 'withdrawn'; ts: string; of: number };
 
 export interface AgentActivity {
   agentId: string;
