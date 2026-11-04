@@ -100,6 +100,19 @@ fn target(h: &Host) -> String {
     }
 }
 
+/// Trozos de `text` para `send-keys -l` que tmux no altera. Un argumento que acaba en `;` lo toma
+/// por separador de órdenes y se come el `;` («uno;» se tecleaba «uno»: a una línea de código le
+/// faltaba el `;` final). Lo de delante de los `;` finales va tal cual y cada `;`, aparte y escapado.
+fn literal_pieces(text: &str) -> Vec<&str> {
+    let body = text.trim_end_matches(';');
+    let mut v = Vec::new();
+    if !body.is_empty() {
+        v.push(body);
+    }
+    v.extend(std::iter::repeat_n("\\;", text.len() - body.len()));
+    v
+}
+
 fn output(mut c: Command) -> Result<String, String> {
     let out = c
         .stdout(Stdio::piped())
@@ -362,7 +375,11 @@ impl Tmux {
 
     /// Teclea `text` literalmente.
     pub fn send_literal(&self, h: &Host, text: &str) -> Result<(), String> {
-        self.run_on(h, &["send-keys", "-t", &target(h), "-l", "--", text]).map(|_| ())
+        let t = target(h);
+        for piece in literal_pieces(text) {
+            self.run_on(h, &["send-keys", "-t", &t, "-l", "--", piece])?;
+        }
+        Ok(())
     }
 
     /// Teclea un texto de varias líneas como si se escribiera: Ctrl+J para cada salto de
@@ -422,4 +439,72 @@ pub fn pane_info(pane: &str) -> Option<(u32, String)> {
     let s = output(c).ok()?;
     let (pid, win) = s.trim().split_once('\t')?;
     Some((pid.parse().ok()?, win.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_pieces_trailing_semicolons() {
+        assert_eq!(literal_pieces("uno;"), ["uno", r"\;"]);
+        assert_eq!(literal_pieces("a; b"), ["a; b"]);
+        assert_eq!(literal_pieces("i;;"), ["i", r"\;", r"\;"]);
+        assert_eq!(literal_pieces(";"), [r"\;"]);
+        assert_eq!(literal_pieces(r"x\;"), [r"x\", r"\;"]);
+        assert!(literal_pieces("").is_empty());
+    }
+
+    /// Con un tmux de verdad, en un servidor propio y aislado: lo tecleado llega tal cual.
+    #[test]
+    fn literal_pieces_real_tmux() {
+        struct Server(String);
+        impl Server {
+            fn tm(&self, args: &[&str]) -> Result<String, String> {
+                let mut c = Command::new("tmux");
+                clean_env(&mut c);
+                c.stdin(Stdio::null()).args(["-L", &self.0, "-f", "/dev/null"]).args(args);
+                output(c)
+            }
+        }
+        impl Drop for Server {
+            fn drop(&mut self) {
+                // tmux deja el fichero del socket al cerrar el servidor.
+                let sock = self.tm(&["display-message", "-p", "#{socket_path}"]);
+                let _ = self.tm(&["kill-server"]);
+                if let Ok(p) = sock {
+                    let _ = std::fs::remove_file(p.trim());
+                }
+            }
+        }
+        let sv = Server(format!("ccdesk-test-{}", std::process::id()));
+        if sv.tm(&["-V"]).is_err() {
+            return; // sin tmux
+        }
+        let wait = |ok: &dyn Fn() -> bool| {
+            for _ in 0..60 {
+                if ok() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        sv.tm(&["new-session", "-d", "-s", "t", "-x", "200", "-y", "20", "stty -echo; exec cat"]).unwrap();
+        wait(&|| sv.tm(&["display-message", "-p", "-t", "t", "#{pane_current_command}"]).is_ok_and(|c| c.trim() == "cat"));
+        let cases = ["uno;", r"dos\;", r"tres\\;", "i;;", ";", "a; b", r"c\", "let x = 1;", "ñandú;"];
+        for s in cases {
+            for p in literal_pieces(s) {
+                sv.tm(&["send-keys", "-t", "t", "-l", "--", p]).unwrap();
+            }
+            sv.tm(&["send-keys", "-t", "t", "-l", "--", "|"]).unwrap();
+            sv.tm(&["send-keys", "-t", "t", "Enter"]).unwrap();
+        }
+        let lines = || -> Vec<String> {
+            let out = sv.tm(&["capture-pane", "-p", "-t", "t"]).unwrap_or_default();
+            out.lines().filter(|l| !l.is_empty()).map(String::from).collect()
+        };
+        wait(&|| lines().len() >= cases.len());
+        let want: Vec<String> = cases.iter().map(|s| format!("{s}|")).collect();
+        assert_eq!(lines(), want);
+    }
 }
