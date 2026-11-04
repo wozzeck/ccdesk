@@ -53,7 +53,8 @@
 
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      // El Esc de la barra de Ctrl+F la cierra a ella, no al panel.
+      if (e.key === 'Escape' && !(e.target as Element | null)?.closest?.('.findbar')) {
         e.stopPropagation();
         onClose();
       }

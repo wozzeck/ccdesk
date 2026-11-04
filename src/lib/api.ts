@@ -63,6 +63,12 @@ export interface SearchHit {
   after: string;
 }
 
+/** Ctrl+F en lo aún no cargado: un item (por su índice) y cuántas veces sale lo buscado. */
+export interface FindHit {
+  index: number;
+  count: number;
+}
+
 /** Imagen del transcript: su línea (byte de inicio) y su orden en ella; se pide aparte. */
 export interface ImgRef {
   path: string;
@@ -199,6 +205,9 @@ export const api = {
     invoke<string>('transcript_image', { path, offset, n }),
   transcriptBefore: (key: string, before: number, count: number) =>
     invoke<Item[]>('transcript_before', { key, before, count }),
+  /** Del más reciente al más antiguo. */
+  transcriptFind: (key: string, query: string, before: number) =>
+    invoke<FindHit[]>('transcript_find', { key, query, before }),
   sessionNew: (cwd: string, name?: string, model?: string, effort?: string) =>
     invoke<string>('session_new', { cwd, name, model, effort }),
   sessionStop: (key: string, force = false, backgroundOk = false) =>

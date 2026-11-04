@@ -47,6 +47,7 @@
   let now = $state(Date.now());
   let drawer = $state<ReturnType<typeof TerminalDrawer> | null>(null);
   let composer = $state<ReturnType<typeof Composer> | null>(null);
+  let conversation = $state<ReturnType<typeof Conversation> | null>(null);
   const prevStatus: Record<string, string> = {};
   let layoutLoaded = false;
 
@@ -354,6 +355,14 @@
       const a = snap?.sessions.find((x) => x.key === activeKey);
       if (a && !a.managed) toast('Las sesiones externas no se pueden renombrar: adóptala primero');
       else if (a) sidebar?.rename(a.key);
+    } else if (
+      e.ctrlKey && !e.shiftKey && !e.altKey && k === 'f' &&
+      // En la terminal integrada es de la shell o de Claude Code.
+      !(e.target as Element | null)?.closest?.('.xterm')
+    ) {
+      e.preventDefault();
+      // Con la terminal a pantalla completa la conversación no se ve.
+      if (active && !drawerOpen && !showNew && !showPrefs) conversation?.find();
     } else if (e.ctrlKey && e.key === 'PageDown') {
       e.preventDefault();
       cycle(1);
@@ -592,7 +601,7 @@
          cerrarla vuelve donde estaba. -->
     <div class="conv-area" class:term-full={drawerOpen && !!active}>
     {#if active && snap}
-      <Conversation session={active} onToast={toast} openAgent={agentReq} />
+      <Conversation bind:this={conversation} session={active} onToast={toast} openAgent={agentReq} />
     {:else}
       <div class="welcome">
         <h2>ccdesk</h2>
@@ -600,7 +609,7 @@
         <button class="primary" onclick={() => (showNew = true)}>+ Nueva sesión</button>
         <p class="muted">
           Ctrl+T nueva · Ctrl+Av/Re Pág cambia de sesión · Ctrl+N/P siguiente/anterior en marcha ·
-          Ctrl+R renombra · Ctrl+º terminal · Ctrl+Mayús+C copia sin formato
+          Ctrl+R renombra · Ctrl+F busca en la conversación · Ctrl+º terminal · Ctrl+Mayús+C copia sin formato
         </p>
       </div>
     {/if}

@@ -128,6 +128,7 @@ fn main() {
             app::snapshot_now,
             app::transcript_open,
             app::transcript_before,
+            app::transcript_find,
             app::session_new,
             app::session_stop,
             app::session_resume,

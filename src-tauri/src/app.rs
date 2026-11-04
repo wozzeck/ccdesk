@@ -1493,6 +1493,22 @@ pub async fn transcript_image(path: String, offset: u64, n: usize) -> Result<Str
     transcript::image_at(&p, offset, n).ok_or_else(|| "imagen no encontrada".into())
 }
 
+/// Dónde sale `query` en lo que aún no se ha cargado de la conversación abierta (los items
+/// anteriores a `before`): Ctrl+F lo cuenta y lo carga al llegar a ello.
+#[tauri::command]
+pub async fn transcript_find(
+    core: State<'_, Shared>,
+    key: String,
+    query: String,
+    before: usize,
+) -> Result<Vec<crate::search::Found>, String> {
+    let tc = core.tcache.lock().unwrap();
+    Ok(match tc.as_ref() {
+        Some(c) if c.key == key => crate::search::find_items(&c.items[..before.min(c.items.len())], &query),
+        _ => vec![],
+    })
+}
+
 /// Sesiones cuya conversación contiene el texto (sobre el índice, que un hilo pone al día cada 10 s).
 #[tauri::command]
 pub async fn search_sessions(core: State<'_, Shared>, query: String) -> Result<Vec<crate::search::Hit>, String> {

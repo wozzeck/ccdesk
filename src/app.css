@@ -664,6 +664,77 @@ footer {
   background: linear-gradient(to bottom, transparent, var(--bg) 45%);
   pointer-events: none;
 }
+/* Ctrl+F: arriba a la derecha de la conversación (a la izquierda del panel del subagente si está
+   abierto). Las coincidencias se resaltan con la API de resaltado de CSS. */
+.findbar {
+  position: absolute;
+  top: 8px;
+  right: 22px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  max-width: calc(100% - 44px);
+  padding: 3px 4px 3px 3px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+}
+.findbar.beside {
+  right: calc(min(760px, 62%) + 14px);
+  max-width: calc(100% - min(760px, 62%) - 28px);
+}
+.findbar:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.findbar input {
+  flex: 0 1 220px;
+  min-width: 70px;
+  border: none;
+  background: transparent;
+  padding: 3px 6px;
+}
+.findbar input:focus {
+  outline: none;
+}
+.fcount {
+  flex: none;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.fcount:empty {
+  display: none;
+}
+.findbar.none .fcount {
+  color: var(--bad);
+}
+.findbar button.icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+}
+/* Sólo fondo, con el color de texto de cada tema: WebKitGTK aplica el `color` de un resaltado
+   en unos elementos sí y en otros no (en el tema oscuro salían letras claras y oscuras mezcladas). */
+::highlight(ccdesk-find) {
+  background-color: rgba(255, 196, 0, 0.38);
+}
+::highlight(ccdesk-find-cur) {
+  background-color: #ff9632;
+}
+:root[data-theme='dark'] ::highlight(ccdesk-find) {
+  background-color: rgba(255, 196, 0, 0.26);
+}
+:root[data-theme='dark'] ::highlight(ccdesk-find-cur) {
+  background-color: #b4530c;
+}
 .msg.user.pending {
   opacity: 0.6;
   border: 1px dashed var(--border);

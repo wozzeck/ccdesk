@@ -5,6 +5,7 @@
   import Spinner from './Spinner.svelte';
   import Transcript from './Transcript.svelte';
   import AgentViewer from './AgentViewer.svelte';
+  import FindBar from './FindBar.svelte';
   import { outbox } from './outbox.svelte';
 
   interface Props {
@@ -49,6 +50,7 @@
       stopGlide();
       toBottom();
       stuck = true;
+      finder?.reloaded();
     } catch (e) {
       onToast(errText(e));
     } finally {
@@ -163,15 +165,41 @@
     };
   });
 
-  async function loadMore() {
+  /** Añade delante los `count` items anteriores a lo cargado, sin mover lo que se ve. */
+  async function prepend(count: number) {
     const key = session.key;
-    const older = await api.transcriptBefore(key, startIndex, 300);
+    const older = await api.transcriptBefore(key, startIndex, count);
     if (key !== session.key || !older.length) return;
     const h0 = scroller.scrollHeight;
     items = [...older, ...items];
     startIndex -= older.length;
     await tick();
     scroller.scrollTop += scroller.scrollHeight - h0;
+  }
+  const loadMore = () => prepend(300);
+
+  // ── Ctrl+F: barra de búsqueda en la conversación (FindBar) ──
+  let finding = $state<{ root: HTMLElement; scroller: HTMLElement; initial: string } | null>(null);
+  let finder = $state<ReturnType<typeof FindBar>>();
+  /** Lo seleccionado en la conversación, si es una línea corta (para buscarlo). */
+  function selected(): string {
+    const s = window.getSelection();
+    const t = s?.toString().trim() ?? '';
+    return t && !t.includes('\n') && t.length <= 200 && s?.anchorNode && inner.contains(s.anchorNode) ? t : '';
+  }
+  /** Abre la barra (o vuelve a ella) con lo seleccionado o, si no, con lo último buscado. */
+  export function find() {
+    const sel = selected();
+    if (finding) finder?.focus(sel);
+    else {
+      const root = inner.querySelector<HTMLElement>(':scope > .transcript');
+      if (root) finding = { root, scroller, initial: sel };
+    }
+  }
+  function closeFind() {
+    finding = null;
+    stuck = atBottom();
+    document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus();
   }
 
   // Panel lateral con el transcript de un subagente. Se cierra al cambiar de sesión, y sólo
@@ -182,6 +210,7 @@
   $effect(() => {
     sessionKey;
     viewer = null;
+    finding = null; // la búsqueda es de cada conversación
   });
   function showAgent(id: string, title: string) {
     viewer = { id, title };
@@ -232,6 +261,23 @@
   </div>
   {#if session.status === 'busy'}
     <div class="thinking-bar"><Spinner size={12} /> Claude está trabajando…</div>
+  {/if}
+  {#if finding}
+    <FindBar
+      bind:this={finder}
+      root={finding.root}
+      scroller={finding.scroller}
+      sessionKey={session.key}
+      {startIndex}
+      initial={finding.initial}
+      beside={!!viewer}
+      loadOlder={(index) => prepend(startIndex - index)}
+      onNav={() => {
+        stopGlide();
+        stuck = false;
+      }}
+      onClose={closeFind}
+    />
   {/if}
   {#if viewer}
     <AgentViewer

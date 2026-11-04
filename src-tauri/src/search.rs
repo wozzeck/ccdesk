@@ -223,6 +223,58 @@ pub fn search(core: &Core, query: &str) -> Vec<Hit> {
     out
 }
 
+/// Coincidencias de Ctrl+F en un item de la conversación (`find_items`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Found {
+    pub index: usize,
+    pub count: usize,
+}
+
+/// Lo que se ve de un item en la conversación (aproximado: el Markdown va sin pintar).
+fn visible(it: &Item) -> Vec<&str> {
+    match it {
+        Item::User { text, .. }
+        | Item::Output { text, .. }
+        | Item::Assistant { text, .. }
+        | Item::ToolResult { text, .. }
+        | Item::Notice { text, .. }
+        | Item::Summary { text, .. }
+        | Item::AgentReport { text, .. } => vec![text.as_str()],
+        Item::Command { name, args, .. } => vec![name.as_str(), args.as_str()],
+        Item::Tool { name, summary, input, .. } => vec![name.as_str(), summary.as_str(), input.as_str()],
+        Item::Agent { description, prompt, .. } => vec![description.as_str(), prompt.as_str()],
+        // El de uno lanzado en segundo plano es el aviso de arranque, que no se enseña.
+        Item::AgentResult { status, text, .. } if status != "async_launched" => vec![text.as_str()],
+        _ => vec![],
+    }
+}
+
+/// Items (por su índice en `items`) donde sale `query`, y cuántas veces, del más reciente al más
+/// antiguo. Como en la vista: sin distinguir mayúsculas ni tildes, y un espacio vale por cualquier
+/// racha de blancos.
+pub fn find_items(items: &[Item], query: &str) -> Vec<Found> {
+    let words = |s: String| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let q = words(fold(query));
+    if q.is_empty() {
+        return vec![];
+    }
+    let spaced = q.contains(' ');
+    let mut out = Vec::new();
+    for (index, it) in items.iter().enumerate().rev() {
+        let count: usize = visible(it)
+            .into_iter()
+            .map(|t| {
+                let f = fold(t);
+                if spaced { words(f).matches(&q).count() } else { f.matches(&q).count() }
+            })
+            .sum();
+        if count > 0 {
+            out.push(Found { index, count });
+        }
+    }
+    out
+}
+
 /// Fragmento alrededor de la coincidencia (`at`: byte en el texto plegado).
 fn snippet(text: &str, fold: &str, at: usize, qlen: usize) -> (String, String, String) {
     let ci = fold[..at].chars().count();
@@ -306,6 +358,40 @@ mod tests {
     }
 
     #[test]
+    fn find_items_newest_first() {
+        let ts = String::new;
+        let items = vec![
+            Item::User { ts: ts(), text: "Revisa la Configuración".into(), mid_turn: false, images: vec![] },
+            Item::Tool { ts: ts(), id: "t".into(), name: "Read".into(), summary: "/x/configuracion.md".into(), input: "{}".into() },
+            Item::AgentResult {
+                ts: ts(),
+                tool_use_id: "t2".into(),
+                agent_id: "a".into(),
+                status: "async_launched".into(),
+                text: "configuración".into(),
+                is_error: false,
+                model: None,
+                duration_ms: None,
+                tokens: None,
+                tool_uses: None,
+            },
+            Item::QueueAdd { ts: ts(), text: "configuración".into(), system: false },
+            Item::Assistant {
+                ts: ts(),
+                msg_id: "m".into(),
+                text: "La **configuración**\n  del tema; CONFIGURACIÓN otra vez".into(),
+                cwd: String::new(),
+            },
+        ];
+        let f = |index, count| Found { index, count };
+        assert_eq!(find_items(&items, "configuración"), vec![f(4, 2), f(1, 1), f(0, 1)]);
+        // Un espacio vale por cualquier racha de blancos (aquí, el salto de línea del Markdown).
+        assert_eq!(find_items(&items, "CONFIGURACION**  del"), vec![f(4, 1)]);
+        assert!(find_items(&items, "  ").is_empty());
+        assert!(find_items(&items[..4], "otra vez").is_empty());
+    }
+
+    #[test]
     fn snippet_around_match() {
         let text = "Primero revisé el fichero.\nLuego cambié la Configuración del tema y probé.";
         let f = fold(text);
@@ -317,3 +403,4 @@ mod tests {
         assert!(b.starts_with('…'));
     }
 }
+
