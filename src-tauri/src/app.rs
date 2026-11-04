@@ -1346,6 +1346,43 @@ pub fn transcript_before(core: State<'_, Shared>, key: String, before: usize, co
     }
 }
 
+/// Selector de carpetas del sistema (GTK) de la sesión nueva: empieza en `start` si es una
+/// carpeta (admite `~`) y devuelve la elegida, o None si se cancela.
+#[tauri::command]
+pub async fn pick_dir(app: AppHandle, start: String) -> Result<Option<String>, String> {
+    let from = paths::resolve_dir(&start).unwrap_or_else(paths::home);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = app.clone();
+    app.run_on_main_thread(move || folder_dialog(&h, &from, tx))
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Sin bloquear el hilo de GTK: la respuesta llega por la señal y el diálogo se destruye ahí.
+fn folder_dialog(app: &AppHandle, from: &Path, tx: std::sync::mpsc::Sender<Option<String>>) {
+    use gtk::prelude::*;
+    use tauri::Manager;
+    let parent = app.get_webview_window("main").and_then(|w| w.gtk_window().ok());
+    let d = gtk::FileChooserDialog::with_buttons(
+        Some("Directorio de trabajo"),
+        parent.as_ref(),
+        gtk::FileChooserAction::SelectFolder,
+        &[("Cancelar", gtk::ResponseType::Cancel), ("Elegir", gtk::ResponseType::Accept)],
+    );
+    d.set_modal(true);
+    d.set_default_response(gtk::ResponseType::Accept);
+    d.set_current_folder(from);
+    d.connect_response(move |d, r| {
+        let dir = if r == gtk::ResponseType::Accept { d.filename() } else { None };
+        let _ = tx.send(dir.map(|p| p.to_string_lossy().into_owned()));
+        // SAFETY: el diálogo no se vuelve a usar después.
+        unsafe { d.destroy() };
+    });
+    d.show();
+}
+
 #[tauri::command]
 pub async fn session_new(
     core: State<'_, Shared>,

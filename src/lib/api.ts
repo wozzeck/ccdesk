@@ -216,6 +216,8 @@ export const api = {
     invoke<FindHit[]>('transcript_find', { key, query, before }),
   sessionNew: (cwd: string, name?: string, model?: string, effort?: string) =>
     invoke<string>('session_new', { cwd, name, model, effort }),
+  /** Selector de carpetas del sistema; empieza en `start`. null si se cancela. */
+  pickDir: (start: string) => invoke<string | null>('pick_dir', { start }),
   sessionStop: (key: string, force = false, backgroundOk = false) =>
     invoke<void>('session_stop', { key, force, backgroundOk }),
   sessionResume: (key: string) => invoke<void>('session_resume', { key }),

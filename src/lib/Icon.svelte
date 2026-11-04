@@ -1,7 +1,7 @@
 <script lang="ts">
   // Iconos de la interfaz (trazos al estilo Lucide, licencia ISC), en el color del texto.
   interface Props {
-    name: 'terminal' | 'todo' | 'settings' | 'send' | 'up' | 'down';
+    name: 'terminal' | 'todo' | 'settings' | 'send' | 'up' | 'down' | 'folder';
     size?: number;
   }
   let { name, size = 17 }: Props = $props();
@@ -45,5 +45,9 @@
     <path d="m18 15-6-6-6 6" />
   {:else if name === 'down'}
     <path d="m6 9 6 6 6-6" />
+  {:else if name === 'folder'}
+    <path
+      d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+    />
   {/if}
 </svg>

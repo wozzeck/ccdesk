@@ -159,6 +159,7 @@ fn main() {
             app::transcript_before,
             app::transcript_find,
             app::session_new,
+            app::pick_dir,
             app::session_stop,
             app::session_resume,
             app::session_adopt,

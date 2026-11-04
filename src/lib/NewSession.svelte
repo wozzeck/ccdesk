@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { errText } from './api';
+  import { tick } from 'svelte';
+  import { api, errText } from './api';
+  import Icon from './Icon.svelte';
 
   interface Props {
     recent: string[];
@@ -15,7 +17,30 @@
   let model = $state('');
   let effort = $state('');
   let busy = $state(false);
+  let picking = $state(false);
   let err = $state('');
+  let cwdInput = $state<HTMLInputElement>();
+
+  /** Selector de carpetas del sistema, empezando en lo que haya escrito. */
+  async function pick() {
+    picking = true;
+    err = '';
+    try {
+      const dir = await api.pickDir(cwd);
+      if (dir) cwd = dir;
+    } catch (x) {
+      err = errText(x);
+    } finally {
+      picking = false;
+      await tick();
+      // Con el cursor al final se ve la carpeta elegida, no el principio de la ruta.
+      if (cwdInput) {
+        cwdInput.focus();
+        cwdInput.setSelectionRange(cwd.length, cwd.length);
+        cwdInput.scrollLeft = cwdInput.scrollWidth;
+      }
+    }
+  }
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
@@ -46,16 +71,21 @@
   >
     <h3>Nueva sesión</h3>
     <label>
-      Directorio de trabajo
-      <input list="ccdesk-cwds" bind:value={cwd} use:focusSelect spellcheck="false" />
+      Nombre (opcional)
+      <input bind:value={name} use:focusSelect placeholder="p. ej. Revisión tren 26.11" />
     </label>
+    <div class="field">
+      <label for="ccdesk-cwd">Directorio de trabajo</label>
+      <div class="pick">
+        <input id="ccdesk-cwd" list="ccdesk-cwds" bind:value={cwd} bind:this={cwdInput} spellcheck="false" />
+        <button type="button" onclick={pick} disabled={picking} title="Elegir directorio">
+          <Icon name="folder" size={15} />
+        </button>
+      </div>
+    </div>
     <datalist id="ccdesk-cwds">
       {#each recent as c (c)}<option value={c}></option>{/each}
     </datalist>
-    <label>
-      Nombre (opcional)
-      <input bind:value={name} placeholder="p. ej. Revisión tren 26.11" />
-    </label>
     <div class="two">
       <label>
         Modelo

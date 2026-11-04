@@ -1570,12 +1570,28 @@ pre.output {
 .modal h3 {
   margin: 0;
 }
-.modal label {
+.modal label,
+.modal .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 12.5px;
   color: var(--muted);
+}
+/* Campo con botón al lado (directorio + selector de carpetas). */
+.modal .pick {
+  display: flex;
+  gap: 6px;
+}
+.modal .pick input {
+  flex: 1;
+  min-width: 0;
+}
+.modal .pick button {
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  color: var(--text);
 }
 .modal .two {
   display: flex;
