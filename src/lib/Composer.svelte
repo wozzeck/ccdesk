@@ -335,8 +335,18 @@
     ta?.focus();
   }
 
+  // Interrumpido antes de que Claude respondiera, Claude Code devuelve el mensaje a su caja: se
+  // trae a esta (delante de lo que haya) y la suya queda vacía, que no se pegue a lo siguiente.
   function interrupt() {
-    api.sendKeys(session.key, ['Escape']).catch((e) => onToast(errText(e)));
+    const key = session.key;
+    api
+      .interrupt(key)
+      .then((t) => {
+        if (!t?.trim()) return;
+        restore(key, t);
+        if (key === currentKey) ta?.focus();
+      })
+      .catch((e) => onToast(errText(e)));
   }
 
   function onKeydown(e: KeyboardEvent) {

@@ -42,6 +42,11 @@ pub struct Core {
     pub usage: Mutex<(Option<SystemTime>, Option<Value>)>,
     /// Índice de búsqueda en las conversaciones.
     pub search: Mutex<crate::search::Index>,
+    /// Turno para teclear en la caja de texto de la TUI: de uno en uno.
+    pub typing: Mutex<()>,
+    /// Veces que se ha tecleado en la caja de cada sesión: lo que espera tras un Esc (`interrupt`)
+    /// sabe así si entretanto se ha enviado algo, que ya se ocupa de la caja.
+    pub typed: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Default)]
@@ -319,14 +324,15 @@ fn sgr_chars(line: &str) -> Vec<(char, bool, bool)> {
     out
 }
 
-/// Sugerencia que Claude Code pinta atenuada en su caja de texto vacía al acabar un turno (se
-/// acepta con Tab). La caja es la última línea `❯ ` entre dos reglas `────`; sólo cuenta si todo
-/// su texto va atenuado (lo escrito por el usuario no lo va). Los ejemplos `Try "…"` de una
-/// sesión nueva también van atenuados, pero no son sugerencias.
-fn detect_suggestion(screen: &str) -> Option<String> {
-    let lines: Vec<Vec<(char, bool, bool)>> = screen.lines().map(sgr_chars).collect();
+type Cell = (char, bool, bool);
+
+/// Caja de texto de la TUI en una captura con `-e`: la última línea `❯ ` justo bajo una regla
+/// `────` y las que la siguen hasta la regla de cierre (sin ella), con el ancho de esa regla, que es
+/// el de la pantalla. `None` si no está a la vista (un selector abierto…).
+fn prompt_box(screen: &str) -> Option<(Vec<Vec<Cell>>, usize)> {
+    let mut lines: Vec<Vec<Cell>> = screen.lines().map(sgr_chars).collect();
     // La regla de arriba puede llevar el nombre de la sesión al final (`──── todo ─`).
-    let is_rule = |l: &[(char, bool, bool)]| {
+    let is_rule = |l: &[Cell]| {
         let mut t = l.iter().map(|x| x.0).skip_while(|c| c.is_whitespace());
         t.by_ref().take(10).filter(|&c| c == '─').count() == 10
     };
@@ -336,19 +342,30 @@ fn detect_suggestion(screen: &str) -> Option<String> {
         start.is_some_and(|s| l[s].0 == '❯' && l.get(s + 1).is_some_and(|x| x.0 == '\u{a0}' || x.0 == ' '))
             && is_rule(&lines[i - 1])
     })?;
+    let end = (i + 1..lines.len()).find(|&k| is_rule(&lines[k]))?;
+    let width = lines[end].len();
+    lines.truncate(end);
+    Some((lines.split_off(i), width))
+}
+
+/// Texto de una fila de la caja: la primera, sin el `❯ `.
+fn box_body(row: &[Cell], first: bool) -> &[Cell] {
+    if !first {
+        return row;
+    }
+    let s = row.iter().position(|x| x.0 == '❯').unwrap_or(0);
+    &row[(s + 2).min(row.len())..]
+}
+
+/// Sugerencia que Claude Code pinta atenuada en su caja de texto vacía al acabar un turno (se
+/// acepta con Tab). Sólo cuenta si todo el texto de la caja va atenuado (lo escrito por el usuario
+/// no lo va). Los ejemplos `Try "…"` de una sesión nueva también van atenuados, pero no son
+/// sugerencias.
+fn detect_suggestion(screen: &str) -> Option<String> {
+    let (rows, _) = prompt_box(screen)?;
     let mut parts = Vec::new();
-    for (k, l) in lines[i..].iter().enumerate() {
-        if k > 0 && is_rule(l) {
-            let text = parts.join(" ");
-            let quoted = text.starts_with("Try \"") && text.ends_with('"');
-            return (!text.is_empty() && !quoted).then_some(text);
-        }
-        let body = if k == 0 {
-            let s = l.iter().position(|x| x.0 == '❯').unwrap_or(0);
-            &l[s + 2..]
-        } else {
-            &l[..]
-        };
+    for (k, l) in rows.iter().enumerate() {
+        let body = box_body(l, k == 0);
         let ink: Vec<_> = body.iter().filter(|x| !x.0.is_whitespace()).collect();
         if ink.iter().any(|x| !x.1 && !x.2) || (k == 0 && !ink.iter().any(|x| x.1)) {
             return None; // texto escrito por el usuario (o caja vacía)
@@ -358,7 +375,135 @@ fn detect_suggestion(screen: &str) -> Option<String> {
             parts.push(s.trim().to_string());
         }
     }
-    None
+    let text = parts.join(" ");
+    let quoted = text.starts_with("Try \"") && text.ends_with('"');
+    (!text.is_empty() && !quoted).then_some(text)
+}
+
+/// Lo escrito en la caja de texto de la TUI, fila a fila tal como se ve (sin la sugerencia ni
+/// otros textos atenuados), y el ancho de la pantalla. Vacío si no hay nada escrito; `None` si la
+/// caja no está a la vista.
+fn typed_rows(screen: &str) -> Option<(Vec<String>, usize)> {
+    let (rows, width) = prompt_box(screen)?;
+    let mut out = Vec::new();
+    let mut typed = false;
+    for (k, l) in rows.iter().enumerate() {
+        let mut body = box_body(l, k == 0);
+        // Las filas siguientes van sangradas dos columnas, bajo el texto de la primera.
+        if k > 0 {
+            let n = body.iter().take(2).take_while(|x| x.0 == ' ' || x.0 == '\u{a0}').count();
+            body = &body[n..];
+        }
+        // Lo escrito no va atenuado; lo invertido es el cursor que pinta la propia TUI.
+        typed |= body.iter().any(|x| !x.0.is_whitespace() && !x.1 && !x.2);
+        let s: String = body.iter().filter(|x| !x.1).map(|x| x.0).collect::<String>().replace('\u{a0}', " ");
+        out.push(s.trim_end().to_string());
+    }
+    if !typed {
+        out.clear();
+    }
+    while out.last().is_some_and(|s| s.is_empty()) {
+        out.pop();
+    }
+    Some((out, width))
+}
+
+/// Junta las filas de la caja en un texto. La TUI parte las líneas largas, y en pantalla esos
+/// cortes no se distinguen de los saltos de línea: se toma por corte la fila tras la que no habría
+/// cabido la primera palabra de la siguiente.
+fn join_rows(rows: &[String], width: usize) -> String {
+    let room = width.saturating_sub(3); // `❯ ` (o la sangría) y el hueco del cursor
+    let mut out = String::new();
+    for (k, r) in rows.iter().enumerate() {
+        if k > 0 {
+            let prev = rows[k - 1].chars().count();
+            let word = r.split_whitespace().next().map_or(0, |w| w.chars().count());
+            out.push(if word > 0 && prev + 1 + word > room { ' ' } else { '\n' });
+        }
+        out.push_str(r);
+    }
+    out
+}
+
+/// El mensaje tal como se envió, si es lo que muestra la caja: uno de tus últimos de la
+/// conversación (comparados sin espacios ni saltos de línea, que en pantalla no se conservan).
+fn sent_match(items: &[Item], rows: &[String]) -> Option<String> {
+    let flat = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let want = flat(&rows.concat());
+    items
+        .iter()
+        .rev()
+        .filter_map(|it| match it {
+            Item::User { text, .. } | Item::QueueAdd { text, system: false, .. } | Item::QueueRemove { text, .. } => {
+                Some(text)
+            }
+            _ => None,
+        })
+        .take(10)
+        .find(|t| flat(t) == want)
+        .cloned()
+}
+
+/// Vacía la caja de texto de la TUI. Ctrl+K y Ctrl+U borran hasta el final y el principio de la
+/// línea (o el salto de línea que haya ahí), así que, repetidas, la vacían entera esté donde esté
+/// el cursor; y sólo editan (Ctrl+C interrumpiría a Claude si trabaja, y con la caja vacía
+/// saldría). Van en tandas cortas y espaciadas: un bloque de 64 bytes o más Claude Code lo toma por
+/// texto pegado y no separa las teclas. `screen` captura la pantalla (con `-e`) y `keys` manda
+/// teclas. Comprueba en pantalla que ha quedado vacía: `false` si sigue habiendo algo escrito.
+fn clear_typed(screen: &dyn Fn() -> Option<String>, keys: &dyn Fn(&[&str])) -> bool {
+    for _ in 0..3 {
+        let rows = match screen().as_deref().and_then(typed_rows) {
+            Some((r, _)) if !r.is_empty() => r.len(),
+            _ => return true, // vacía, o no está a la vista (no hay en qué teclear)
+        };
+        let n = 2 * rows + 2;
+        for key in ["C-k", "C-u"] {
+            let mut left = n;
+            while left > 0 {
+                let k = left.min(8);
+                keys(&vec![key; k]);
+                left -= k;
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    screen().as_deref().and_then(typed_rows).is_none_or(|(r, _)| r.is_empty())
+}
+
+fn clear_box(t: &Tmux, h: &Host) -> bool {
+    clear_typed(&|| t.capture_ansi(h), &|k| {
+        let _ = t.send_keys(h, k);
+    })
+}
+
+/// Tras el Esc: lo que Claude Code devuelve a su caja (lo interrumpido antes de que respondiera, o
+/// lo que tenías en cola), si aparece en `wait`. `before`: lo que ya había escrito. `stop`: se ha
+/// empezado a teclear otra cosa en la sesión, que se ocupa ella de la caja.
+fn await_restored(
+    screen: &dyn Fn() -> Option<String>,
+    before: &[String],
+    stop: &dyn Fn() -> bool,
+    wait: Duration,
+) -> Option<(Vec<String>, usize)> {
+    let t0 = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        if stop() {
+            return None;
+        }
+        if let Some((rows, width)) = screen().as_deref().and_then(typed_rows) {
+            if !rows.is_empty() && rows != before {
+                // Un fotograma grande puede llegar a tmux en varios trozos: un momento y se relee.
+                std::thread::sleep(Duration::from_millis(150));
+                let again = screen().as_deref().and_then(typed_rows).filter(|(r, _)| !r.is_empty());
+                return Some(again.unwrap_or((rows, width)));
+            }
+        }
+        if t0.elapsed() > wait {
+            return None;
+        }
+    }
 }
 
 fn read_mode(core: &Core, key: &str, plain: Option<&str>) -> Option<String> {
@@ -1554,13 +1699,25 @@ pub async fn slash_commands(core: State<'_, Shared>, key: String) -> Result<Vec<
 #[tauri::command]
 pub async fn send_input(core: State<'_, Shared>, key: String, text: String) -> Result<(), String> {
     let h = host_of(&core, &key).ok_or("La sesión no está en marcha")?;
-    type_and_enter(&core, &h, &text)
+    type_and_enter(&core, &key, &h, &text)
 }
 
-fn type_and_enter(core: &Core, h: &Host, text: &str) -> Result<(), String> {
+/// Se va a teclear en la caja de la sesión (`Core::typed`).
+fn note_typing(core: &Core, key: &str) {
+    *core.typed.lock().unwrap().entry(key.to_string()).or_default() += 1;
+}
+
+fn type_and_enter(core: &Core, key: &str, h: &Host, text: &str) -> Result<(), String> {
     let text = text.trim_end_matches(['\n', '\r']);
     if text.trim().is_empty() {
         return Ok(());
+    }
+    let _turn = core.typing.lock().unwrap();
+    note_typing(core, key);
+    // Lo que hubiera en la caja de la TUI se quedaría pegado delante del mensaje: Claude Code
+    // devuelve ahí lo interrumpido antes de que respondiera (también desde la terminal).
+    if !clear_box(&core.tmux, h) {
+        log(&format!("{key}: no se ha podido vaciar la caja de texto de la TUI"));
     }
     // Tecleado, no pegado: un pegado grande se pliega como «[Pasted text]» y le llega al
     // modelo como texto pegado de otra fuente.
@@ -1616,7 +1773,7 @@ pub async fn send_when_ready(core: State<'_, Shared>, key: String, text: String)
             }
             std::thread::sleep(Duration::from_millis(200));
         }
-        type_and_enter(&core, &h, &text)
+        type_and_enter(&core, &key, &h, &text)
     });
     job.await.map_err(|e| e.to_string())?
 }
@@ -1709,11 +1866,24 @@ fn idle_host(core: &Core, key: &str) -> Result<Host, String> {
     if !v.managed || v.status != "idle" {
         return Err("Espera a que Claude termine (sólo se puede con la sesión inactiva)".into());
     }
+    // Es para manejar su TUI: lo que espere tras un Esc (`interrupt`) ya no toca la caja.
+    note_typing(core, key);
     host_of(core, key).ok_or_else(|| "La sesión no está en marcha".into())
+}
+
+/// Lo que hubiera escrito en la caja se juntaría con la orden que se va a teclear, y al pulsar
+/// Intro se enviaría como mensaje.
+fn clear_for_command(t: &Tmux, h: &Host) -> Result<(), String> {
+    if clear_box(t, h) {
+        Ok(())
+    } else {
+        Err("La caja de texto de Claude Code tiene algo escrito que no he podido borrar".into())
+    }
 }
 
 /// Abre un selector (`/model`, `/effort`) y espera a que aparezca.
 fn open_picker(t: &Tmux, h: &Host, cmd: &str, marker: &str) -> Result<String, String> {
+    clear_for_command(t, h)?;
     t.send_literal(h, cmd)?;
     std::thread::sleep(Duration::from_millis(250));
     t.send_keys(h, &["Enter"])?;
@@ -2014,6 +2184,7 @@ pub async fn usage_refresh(core: State<'_, Shared>, key: String) -> Result<(), S
             .and_then(|j| j["cachedUsageUtilization"]["fetchedAtMs"].as_u64())
     };
     let before = read();
+    clear_for_command(&core.tmux, &h)?;
     core.tmux.send_literal(&h, "/usage")?;
     std::thread::sleep(Duration::from_millis(250));
     core.tmux.send_keys(&h, &["Enter"])?;
@@ -2134,6 +2305,42 @@ pub fn send_keys(core: State<'_, Shared>, key: String, keys: Vec<String>) -> Res
     let h = host_of(&core, &key).ok_or("La sesión no está en marcha")?;
     let k: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     core.tmux.send_keys(&h, &k)
+}
+
+/// Interrumpe a Claude (Esc). Si aún no había respondido, Claude Code devuelve el mensaje a su caja
+/// de texto, y lo que se tecleara después se le pegaría detrás: se recoge de ahí y se vacía. Lo
+/// devuelve (tal como se envió, si es uno de los últimos de la conversación) para la caja de ccdesk.
+#[tauri::command]
+pub async fn interrupt(core: State<'_, Shared>, key: String) -> Result<Option<String>, String> {
+    let h = host_of(&core, &key).ok_or("La sesión no está en marcha")?;
+    let core = core.inner().clone();
+    let job = tauri::async_runtime::spawn_blocking(move || {
+        let t = &core.tmux;
+        let screen = || t.capture_ansi(&h);
+        let typed = || core.typed.lock().unwrap().get(&key).copied().unwrap_or(0);
+        let before = screen().as_deref().and_then(typed_rows).map(|(r, _)| r).unwrap_or_default();
+        let gen = typed();
+        t.send_keys(&h, &["Escape"])?;
+        // Un hook al enviar (UserPromptSubmit) puede hacer que tarde un poco en devolverlo.
+        let wait = Duration::from_secs(5);
+        let Some((rows, width)) = await_restored(&screen, &before, &|| typed() != gen, wait) else {
+            return Ok(None);
+        };
+        let _turn = core.typing.lock().unwrap();
+        // Si entretanto se ha enviado algo, o la caja ya no muestra eso (la ha vaciado otro Esc, se
+        // ha seguido escribiendo en la terminal…), se deja estar.
+        let now = screen().as_deref().and_then(typed_rows).map(|(r, _)| r);
+        if typed() != gen || now.as_ref() != Some(&rows) {
+            return Ok(None);
+        }
+        let sent = core.tcache.lock().unwrap().as_ref().filter(|c| c.key == key).and_then(|c| sent_match(&c.items, &rows));
+        let text = sent.unwrap_or_else(|| join_rows(&rows, width));
+        if !clear_box(t, &h) {
+            log(&format!("{key}: no se ha podido vaciar la caja de texto de la TUI tras interrumpir"));
+        }
+        Ok(Some(text))
+    });
+    job.await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2682,12 +2889,257 @@ mod tests {
         assert_eq!(detect_suggestion("  Select model\n   ❯ 4.  Sonnet 5.5\n"), None);
     }
 
+    #[test]
+    fn typed_text_in_prompt_box() {
+        use super::typed_rows;
+        let rule = format!("\x1b[38;5;244m{}", "─".repeat(40));
+        let foot = "\x1b[39m  \x1b[38;5;220m⏵⏵ auto mode on\x1b[39m";
+        let scr = |input: &str| format!("\x1b[38;5;246m✻ Worked for 1m\x1b[39m\n\n{rule} todo ─\n{input}\n{rule}\n{foot}\n");
+        let rows = |input: &str| typed_rows(&scr(input)).map(|(r, _)| r);
+        let v = |xs: &[&str]| Some(xs.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // Escrito, con el cursor (invertido) al final o en medio.
+        assert_eq!(rows("❯\u{a0}hola\x1b[7m \x1b[27m"), v(&["hola"]));
+        assert_eq!(rows("❯\u{a0}ho\x1b[7ml\x1b[27ma"), v(&["hola"]));
+        // Varias filas: sin la sangría de dos columnas (la de más es del texto), con la vacía de en medio.
+        assert_eq!(rows("❯\u{a0}primera\n  segunda\n\n    sangrada\x1b[7m \x1b[27m"), v(&["primera", "segunda", "", "  sangrada"]));
+        // El autocompletado atenuado detrás de lo escrito no cuenta.
+        assert_eq!(rows("❯\u{a0}/mo\x1b[2mdel\x1b[0m"), v(&["/mo"]));
+        // Sugerencia (con o sin el cursor encima) o caja vacía: nada escrito.
+        assert_eq!(rows("\x1b[39m❯\u{a0}\x1b[2mcrea otra hija\x1b[0m"), v(&[]));
+        assert_eq!(rows("❯\u{a0}\x1b[7m\x1b[2mc\x1b[27mrea otra\x1b[0m"), v(&[]));
+        assert_eq!(rows("\x1b[38;5;246m❯\u{a0}\x1b[39m\x1b[7m \x1b[27m"), v(&[]));
+        // Sin caja (un selector abierto): no se sabe.
+        assert_eq!(typed_rows("  Select model\n   ❯ 4.  Sonnet 5.5\n"), None);
+        // El ancho, el de la regla de cierre.
+        assert_eq!(typed_rows(&scr("❯\u{a0}x")).map(|(_, w)| w), Some(40));
+    }
+
+    #[test]
+    fn rows_joined_and_matched() {
+        use super::{join_rows, sent_match, Item};
+        let s = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // Ancho 30 (caben 27): la primera fila se partió (no cabía «tres»); la segunda acaba línea.
+        let rows = s(&["uno dos uno dos uno dos uno", "tres cuatro", "cinco"]);
+        assert_eq!(join_rows(&rows, 30), "uno dos uno dos uno dos uno tres cuatro\ncinco");
+        let user = |t: &str| Item::User { ts: String::new(), text: t.into(), mid_turn: false, images: vec![] };
+        let items = vec![
+            user("uno dos uno dos uno dos uno tres\ncuatro\ncinco"),
+            Item::QueueAdd { ts: String::new(), text: "aviso".into(), system: true },
+            user("otro"),
+        ];
+        // Tal como se envió, con sus saltos de línea, aunque en pantalla no se distingan.
+        assert_eq!(sent_match(&items, &rows).as_deref(), Some("uno dos uno dos uno dos uno tres\ncuatro\ncinco"));
+        assert_eq!(sent_match(&items, &s(&["otro"])).as_deref(), Some("otro"));
+        assert_eq!(sent_match(&items, &s(&["aviso"])), None); // los avisos internos no son tuyos
+        assert_eq!(sent_match(&items, &s(&["nada"])), None);
+    }
+
+    /// TUI de mentira con la caja de texto de Claude Code: Ctrl+K y Ctrl+U borran por filas (o el
+    /// salto de línea), Esc devuelve un mensaje a la caja y un bloque de 64 bytes o más es texto.
+    const FAKE_TUI: &str = r##"
+import os, sys, tty, shutil
+RESTORE = open(sys.argv[1], encoding='utf-8').read()
+W = shutil.get_terminal_size().columns
+TW = W - 3
+tty.setraw(0)
+text, cur, sent, restored = '', 0, [], False
+
+def layout(t):
+    rows, pos = [], 0
+    for line in t.split('\n'):
+        a = 0
+        while len(line) - a > TW:
+            cut = line.rfind(' ', a, a + TW + 1)
+            if cut <= a:
+                rows.append((pos + a, pos + a + TW)); a += TW
+            else:
+                rows.append((pos + a, pos + cut)); a = cut + 1
+        rows.append((pos + a, pos + len(line)))
+        pos += len(line) + 1
+    return rows
+
+def row_of(rows, c):
+    for i, (a, b) in enumerate(rows):
+        if a <= c <= b:
+            return i
+    return len(rows) - 1
+
+def render():
+    o = '\x1b[H\x1b[2J'
+    for s in sent:
+        o += 'SENT: ' + s.replace('\n', ' / ') + '\r\n'
+    o += '\x1b[38;5;244m' + '─' * W + '\x1b[39m\r\n'
+    if text:
+        for i, (a, b) in enumerate(layout(text)):
+            o += '❯ ' if i == 0 else '  '
+            for k in range(a, b):
+                o += ('\x1b[7m' + text[k] + '\x1b[27m') if k == cur else text[k]
+            if cur == b and (b == len(text) or text[b] == '\n'):
+                o += '\x1b[7m \x1b[27m'
+            o += '\r\n'
+    else:
+        o += '\x1b[38;5;246m❯ \x1b[39m\x1b[7m\x1b[2ms\x1b[27mugerencia atenuada\x1b[0m\r\n'
+    o += '\x1b[38;5;244m' + '─' * W + '\x1b[39m\r\n'
+    o += '  \x1b[38;5;220m⏵⏵ auto mode on\x1b[39m'
+    os.write(1, o.encode())
+
+render()
+while True:
+    data = os.read(0, 4096).decode('utf-8', 'replace')
+    if len(data) >= 64 and any(ord(ch) < 32 for ch in data):
+        ins = ''.join('¿' if ord(ch) < 32 else ch for ch in data)
+        text = text[:cur] + ins + text[cur:]
+        cur += len(ins)
+        render()
+        continue
+    for ch in data:
+        if ch == '\x0b':
+            if cur < len(text) and text[cur] == '\n':
+                text = text[:cur] + text[cur + 1:]
+            else:
+                rows = layout(text); i = row_of(rows, cur); b = rows[i][1]
+                if cur == b and i + 1 < len(rows):
+                    b = rows[i + 1][1]
+                text = text[:cur] + text[b:]
+        elif ch == '\x15':
+            if cur > 0 and text[cur - 1] == '\n':
+                text = text[:cur - 1] + text[cur:]; cur -= 1
+            else:
+                rows = layout(text); i = row_of(rows, cur); a = rows[i][0]
+                if cur == a and i > 0:
+                    a = rows[i - 1][0]
+                text = text[:a] + text[cur:]; cur = a
+        elif ch == '\x01':
+            cur = 0
+        elif ch == '\n':
+            text = text[:cur] + '\n' + text[cur:]; cur += 1
+        elif ch == '\r':
+            sent.append(text); text = ''; cur = 0
+        elif ch == '\x1b':
+            if not restored:
+                restored = True
+                text = RESTORE + text; cur = len(text)
+        elif ord(ch) >= 32:
+            text = text[:cur] + ch + text[cur:]; cur += 1
+    render()
+"##;
+
+    /// Con un tmux de verdad, en un servidor propio y aislado, y la TUI de mentira: vaciar la caja
+    /// (esté donde esté el cursor) y recoger lo que devuelve el Esc.
+    #[test]
+    fn clear_and_restore_real_tmux() {
+        use super::{await_restored, clear_typed, detect_suggestion, join_rows, typed_rows};
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+        struct Server(String, PathBuf);
+        impl Server {
+            fn tm(&self, args: &[&str]) -> Result<String, String> {
+                let o = Command::new("tmux")
+                    .env_remove("TMUX")
+                    .env_remove("TMUX_PANE")
+                    .env("LC_ALL", "C.UTF-8")
+                    .stdin(Stdio::null())
+                    .args(["-L", &self.0, "-f", "/dev/null"])
+                    .args(args)
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                let out = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+                if o.status.success() { Ok(out(&o.stdout)) } else { Err(out(&o.stderr)) }
+            }
+        }
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let sock = self.tm(&["display-message", "-p", "#{socket_path}"]);
+                let _ = self.tm(&["kill-server"]);
+                if let Ok(p) = sock {
+                    let _ = std::fs::remove_file(p.trim());
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("ccdesk-box-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sv = Server(format!("ccdesk-box-{}", std::process::id()), dir.clone());
+        if sv.tm(&["-V"]).is_err() || Command::new("python3").arg("-V").output().is_err() {
+            return; // sin tmux o sin python
+        }
+        let restore = "sí, mete el insert de la fila 196 y luego mira que el trigger de auditoría no salte dos veces\ny dime qué ha pasado";
+        std::fs::write(dir.join("tui.py"), FAKE_TUI).unwrap();
+        std::fs::write(dir.join("restore.txt"), restore).unwrap();
+        let cmd = format!("exec python3 -I {}/tui.py {}/restore.txt", dir.display(), dir.display());
+        sv.tm(&["new-session", "-d", "-s", "t", "-x", "60", "-y", "60", &cmd]).unwrap();
+        let screen = || sv.tm(&["capture-pane", "-p", "-e", "-t", "t"]).ok();
+        let keys = |k: &[&str]| {
+            let mut a = vec!["send-keys", "-t", "t"];
+            a.extend_from_slice(k);
+            let _ = sv.tm(&a);
+        };
+        let rows = || screen().as_deref().and_then(typed_rows).map(|(r, _)| r);
+        let wait = |ok: &dyn Fn() -> bool| {
+            (0..80).any(|_| {
+                let r = ok();
+                if !r {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                r
+            })
+        };
+        // Arranca con la caja vacía y la sugerencia atenuada.
+        assert!(wait(&|| rows().is_some_and(|r| r.is_empty())), "{:?}", screen());
+        assert_eq!(screen().as_deref().and_then(detect_suggestion).as_deref(), Some("sugerencia atenuada"));
+        let lines = ["primera línea", "una segunda bastante larga, que la caja parte en dos filas por lo menos", "fin"];
+        // Con el cursor al principio (lo borra Ctrl+K) y al final (Ctrl+U).
+        for at_start in [true, false] {
+            for (k, line) in lines.iter().enumerate() {
+                if k > 0 {
+                    keys(&["C-j"]);
+                }
+                keys(&["-l", line]);
+            }
+            assert!(wait(&|| rows().is_some_and(|r| r.len() >= 4 && r.last().is_some_and(|l| l == "fin"))), "{:?}", rows());
+            assert_eq!(rows().unwrap()[0], "primera línea");
+            if at_start {
+                keys(&["C-a"]);
+            }
+            assert!(clear_typed(&screen, &keys));
+            assert_eq!(rows(), Some(vec![]));
+        }
+        // Una caja alta (35 filas) pide más de 64 teclas: van en tandas cortas, que 64 de golpe le
+        // llegarían como texto.
+        for k in 0..35 {
+            if k > 0 {
+                keys(&["C-j"]);
+            }
+            keys(&["-l", &format!("línea {k}")]);
+        }
+        assert!(wait(&|| rows().is_some_and(|r| r.len() == 35)), "{:?}", rows());
+        assert!(clear_typed(&screen, &keys));
+        assert_eq!(rows(), Some(vec![]));
+        // Lo que imita: 64 teclas de golpe le llegan como texto.
+        keys(&["C-u"; 70]);
+        assert!(wait(&|| rows().is_some_and(|r| r.concat().contains("¿¿¿"))), "{:?}", rows());
+        assert!(clear_typed(&screen, &keys));
+        assert_eq!(rows(), Some(vec![]));
+        // Esc: lo que vuelve a la caja se recoge, y las filas se juntan como se envió (el corte de
+        // fila no es salto de línea).
+        keys(&["Escape"]);
+        let (back, width) = await_restored(&screen, &[], &|| false, Duration::from_secs(3)).expect("no ha vuelto nada");
+        assert!(back.len() >= 3, "{back:?}");
+        assert_eq!(join_rows(&back, width), restore);
+        assert!(clear_typed(&screen, &keys));
+        assert_eq!(rows(), Some(vec![]));
+        // Si entretanto se teclea otra cosa, no espera.
+        assert_eq!(await_restored(&screen, &[], &|| true, Duration::from_secs(3)), None);
+    }
+
     /// CCDESK_TEST_SCREEN=<fichero de `tmux capture-pane -p -e`> cargo test screen -- --nocapture
     #[test]
     fn screen() {
         let Ok(f) = std::env::var("CCDESK_TEST_SCREEN") else { return };
         let s = std::fs::read_to_string(f).unwrap();
         println!("sugerencia: {:?}", super::detect_suggestion(&s));
+        println!("escrito: {:?}", super::typed_rows(&s));
     }
 
     #[test]

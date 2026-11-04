@@ -235,6 +235,8 @@ export const api = {
   /** Teclea el texto en cuanto la sesión (que arranca o se reanuda) esté lista. */
   sendWhenReady: (key: string, text: string) => invoke<void>('send_when_ready', { key, text }),
   sendKeys: (key: string, keys: string[]) => invoke<void>('send_keys', { key, keys }),
+  /** Esc a Claude. Devuelve el mensaje que Claude Code devolvió a su caja (y se ha vaciado), si lo hubo. */
+  interrupt: (key: string) => invoke<string | null>('interrupt', { key }),
   sessionModels: (key: string) =>
     invoke<{ n: number; label: string; desc: string }[]>('session_models', { key }),
   sessionEfforts: (key: string) =>

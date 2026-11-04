@@ -48,6 +48,8 @@ fn main() {
         opts: Mutex::new(app::OptsCache::default()),
         usage: Mutex::new((None, None)),
         search: Mutex::new(search::Index::default()),
+        typing: Mutex::new(()),
+        typed: Mutex::new(std::collections::HashMap::new()),
     });
     let poller_core = core.clone();
 
@@ -147,6 +149,7 @@ fn main() {
             app::open_file,
             app::image_file,
             app::send_keys,
+            app::interrupt,
             app::session_set_model,
             app::session_set_effort,
             app::session_set_mode,
