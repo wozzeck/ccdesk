@@ -94,6 +94,9 @@ pub struct Persist {
     /// Última sesión abierta (clave y session id, por si la clave cambia al adoptarla).
     pub last_active: Option<String>,
     pub last_active_sid: Option<String>,
+    /// Sesiones con algo sin leer (una respuesta nueva, o marcadas a mano), por clave: así
+    /// siguen marcadas al volver a abrir la app.
+    pub unread: Vec<String>,
 }
 
 impl Persist {
@@ -110,6 +113,20 @@ impl Persist {
         self.names.remove(key);
         self.exempt.retain(|k| k != key);
         self.notes.remove(key);
+        self.unread.retain(|k| k != key);
+    }
+
+    /// Marca o desmarca «sin leer»; true si ha cambiado.
+    pub fn set_unread(&mut self, key: &str, unread: bool) -> bool {
+        if self.unread.iter().any(|k| k == key) == unread {
+            return false;
+        }
+        if unread {
+            self.unread.push(key.to_string());
+        } else {
+            self.unread.retain(|k| k != key);
+        }
+        true
     }
 }
 
@@ -142,5 +159,26 @@ pub fn save(p: &Persist) {
         if std::fs::write(&tmp, s).is_ok() {
             let _ = std::fs::rename(&tmp, &f);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unread_marks() {
+        let mut p = Persist::default();
+        assert!(p.set_unread("a", true));
+        assert!(!p.set_unread("a", true)); // ya lo estaba
+        assert!(p.set_unread("b", true));
+        assert!(p.set_unread("a", false));
+        assert!(!p.set_unread("a", false));
+        assert_eq!(p.unread, ["b"]);
+        p.forget("b");
+        assert!(p.unread.is_empty());
+        // Un state.json de antes, sin el campo, se sigue leyendo.
+        let old: Persist = serde_json::from_str(r#"{"version":1,"order":["x"]}"#).unwrap();
+        assert!(old.unread.is_empty() && old.order == ["x"]);
     }
 }

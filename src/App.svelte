@@ -32,6 +32,12 @@
   let snap = $state<Snapshot | null>(null);
   let activeKey = $state<string | null>(null);
   let unread = $state<Record<string, boolean>>({});
+  /** «Sin leer» de una sesión. Se guarda en el estado de la app: sigue al volver a abrirla. */
+  function setUnread(key: string, v: boolean) {
+    if (!!unread[key] === v) return;
+    unread[key] = v;
+    api.setUnread(key, v).catch((e) => toast(errText(e)));
+  }
   let sidebar = $state<ReturnType<typeof Sidebar>>();
   let drawerOpen = $state(false);
   let drawerAuto = false;
@@ -126,13 +132,14 @@
         v.status === 'idle' &&
         (p === 'busy' || ATTENTION.includes(p as any))
       ) {
-        unread[v.key] = true;
+        setUnread(v.key, true);
       }
       prevStatus[v.key] = v.status;
     }
     snap = s;
     if (!layoutLoaded) {
       layoutLoaded = true;
+      for (const k of s.unread ?? []) unread[k] = true; // lo que quedó sin leer la última vez
       sidebarWidth = s.settings.sidebarWidth || 290;
       notesOpen = s.settings.notesOpen ?? true;
       zoom = s.settings.zoom || 1;
@@ -153,7 +160,7 @@
 
   function select(key: string | null) {
     activeKey = key;
-    if (key) unread[key] = false;
+    if (key) setUnread(key, false);
     drawerAuto = false;
     try {
       if (key) localStorage.setItem('ccdesk.active', key);
@@ -267,6 +274,9 @@
           );
           break;
         }
+        case 'unread':
+          setUnread(s.key, true); // hasta que se vuelva a abrir, como las respuestas sin leer
+          break;
         case 'pin':
           applySnap(await api.setPinned(s.key, !s.pinned));
           break;

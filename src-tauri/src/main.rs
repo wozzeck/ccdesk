@@ -138,6 +138,7 @@ fn main() {
             app::session_rename,
             app::set_layout,
             app::set_pinned,
+            app::set_unread,
             app::set_exempt,
             app::settings_update,
             app::send_input,

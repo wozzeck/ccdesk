@@ -421,6 +421,12 @@ footer {
   opacity: 0.6;
   transform: scale(0.65);
 }
+/* Detenida con algo sin leer: el círculo hueco, pero del tamaño y el color de la novedad. */
+.st.stopped.has-unread {
+  border: 2px solid var(--unread);
+  opacity: 1;
+  transform: scale(0.875);
+}
 /* En marcha con trabajo en segundo plano: el punto de «en marcha» con un arco que gira
    despacio alrededor (más tranquilo que el spinner de «trabajando»). */
 .st.bg {

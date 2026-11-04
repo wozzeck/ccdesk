@@ -115,6 +115,8 @@ export interface Snapshot {
   } | null;
   lastActive: string | null;
   lastActiveSid: string | null;
+  /** Sesiones con algo sin leer (guardadas: sobreviven a cerrar la app). */
+  unread: string[];
   quota: { five_hour?: RateWindow; seven_day?: RateWindow } | null;
   settings: Settings;
   recentCwds: string[];
@@ -224,6 +226,7 @@ export const api = {
   setLayout: (pinned: string[], order: string[] | null) =>
     invoke<Snapshot>('set_layout', { pinned, order }),
   setPinned: (key: string, pinned: boolean) => invoke<Snapshot>('set_pinned', { key, pinned }),
+  setUnread: (key: string, unread: boolean) => invoke<void>('set_unread', { key, unread }),
   setExempt: (key: string, exempt: boolean) => invoke<Snapshot>('set_exempt', { key, exempt }),
   settingsUpdate: (settings: Settings) => invoke<Snapshot>('settings_update', { settings }),
   sendInput: (key: string, text: string) => invoke<void>('send_input', { key, text }),

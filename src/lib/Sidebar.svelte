@@ -360,7 +360,11 @@
   {:else if ATTENTION.includes(s.status)}
     <span class="st attn" title="Requiere tu atención">!</span>
   {:else if s.status === 'stopped'}
-    <span class="st stopped" title="Detenida"></span>
+    <span
+      class="st stopped"
+      class:has-unread={unread[s.key]}
+      title="Detenida{unread[s.key] ? '\nRespuesta nueva sin leer' : ''}"
+    ></span>
   {:else if s.background}
     <span
       class="st bg"
@@ -567,6 +571,9 @@
     onclick={(e) => e.stopPropagation()}
     onkeydown={(e) => e.key === 'Escape' && (menu = null)}
   >
+    {#if !unread[s.key]}
+      <button onclick={() => act('unread')}>Marcar como no leído</button>
+    {/if}
     {#if s.managed}
       <button onclick={() => act('rename')}>Renombrar</button>
       <button onclick={() => act('pin')}>{s.pinned ? 'Desfijar' : 'Fijar arriba'}</button>

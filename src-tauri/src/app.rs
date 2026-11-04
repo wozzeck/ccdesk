@@ -121,6 +121,8 @@ pub struct Snapshot {
     /// Última sesión abierta, para volver a ella al arrancar.
     pub last_active: Option<String>,
     pub last_active_sid: Option<String>,
+    /// Sesiones con algo sin leer (guardadas: sobreviven a cerrar la app).
+    pub unread: Vec<String>,
     pub quota: Option<Value>,
     pub settings: Settings,
     pub recent_cwds: Vec<String>,
@@ -777,6 +779,12 @@ pub fn build(core: &Core) -> Snapshot {
     if before != (p.order.len(), p.pinned.len()) {
         dirty = true;
     }
+    // Lo sin leer de las que ya no están (quitadas de la lista, externas que han terminado).
+    let before = p.unread.len();
+    p.unread.retain(|k| views.contains_key(k) || externals.iter().any(|e| &e.key == k));
+    if before != p.unread.len() {
+        dirty = true;
+    }
 
     // Procesos por sesión: más de uno = el mismo transcript escrito por varios a la vez.
     let describe = |r: &RegEntry| match r.tmux.as_deref() {
@@ -806,8 +814,13 @@ pub fn build(core: &Core) -> Snapshot {
     let mut sessions = arrange(&mut views, &p.pinned, &p.order, p.settings.session_order == "recent");
     sessions.extend(externals);
 
-    let (last_active, last_active_sid, settings, recent_cwds) =
-        (p.last_active.clone(), p.last_active_sid.clone(), p.settings.clone(), p.recent_cwds.clone());
+    let (last_active, last_active_sid, settings, recent_cwds, unread) = (
+        p.last_active.clone(),
+        p.last_active_sid.clone(),
+        p.settings.clone(),
+        p.recent_cwds.clone(),
+        p.unread.clone(),
+    );
     if dirty {
         state::save(&p);
     }
@@ -834,6 +847,7 @@ pub fn build(core: &Core) -> Snapshot {
         usage: usage_breakdown(core),
         last_active,
         last_active_sid,
+        unread,
         quota: account_quota(),
         settings,
         recent_cwds,
@@ -1259,9 +1273,12 @@ fn adopt_view(core: &Core, v: &SessionView) -> Result<String, String> {
     p.order.retain(|k| k != &key);
     p.order.insert(0, key.clone());
     p.touch_cwd(&v.cwd);
-    // Los to-dos apuntados a la externa pasan a la gestionada.
+    // Los to-dos apuntados a la externa pasan a la gestionada, y lo sin leer también.
     if let Some(n) = p.notes.remove(&v.key) {
         p.notes.entry(key.clone()).or_default().extend(n);
+    }
+    if p.set_unread(&v.key, false) {
+        p.set_unread(&key, true);
     }
     state::save(&p);
     Ok(key)
@@ -1363,6 +1380,16 @@ pub async fn set_pinned(core: State<'_, Shared>, key: String, pinned: bool) -> R
         state::save(&p);
     }
     Ok(build(&core))
+}
+
+/// «Sin leer»: lo marca la app (respuesta nueva en otra sesión) o el usuario (menú contextual).
+#[tauri::command]
+pub async fn set_unread(core: State<'_, Shared>, key: String, unread: bool) -> Result<(), String> {
+    let mut p = core.persist.lock().unwrap();
+    if p.set_unread(&key, unread) {
+        state::save(&p);
+    }
+    Ok(())
 }
 
 #[tauri::command]
