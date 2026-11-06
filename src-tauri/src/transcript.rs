@@ -89,7 +89,16 @@ pub enum Item {
         #[serde(skip_serializing_if = "String::is_empty")]
         cwd: String,
     },
-    Tool { ts: String, id: String, name: String, summary: String, input: String },
+    Tool {
+        ts: String,
+        id: String,
+        name: String,
+        summary: String,
+        input: String,
+        /// Fichero de la captura que hace (`screenshot_file`): la interfaz la enseña en miniatura.
+        #[serde(skip_serializing_if = "String::is_empty")]
+        shot: String,
+    },
     /// Llamada a un subagente (herramienta Agent/Task).
     Agent {
         ts: String,
@@ -700,6 +709,7 @@ fn parse_assistant(v: &Value, ts: String) -> Vec<Item> {
                     id: b["id"].as_str().unwrap_or("").to_string(),
                     summary: tool_summary(&name, input),
                     input: tool_input(&name, input),
+                    shot: screenshot_file(&name, input, v["cwd"].as_str().unwrap_or("")),
                     name,
                 });
             }
@@ -884,6 +894,37 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
     trunc_line(&first, 160)
 }
 
+/// Dónde deja su captura `browser_take_screenshot` (MCP de Playwright). Sólo contesta con un enlace
+/// al fichero: la imagen no llega al transcript. Vacío si no es eso o no se sabe.
+fn screenshot_file(name: &str, input: &Value, cwd: &str) -> String {
+    let Some(f) = input["filename"].as_str().filter(|_| name.ends_with("browser_take_screenshot")) else {
+        return String::new();
+    };
+    // El directorio del MCP: el que fija su envoltorio (~/bin/claude-playwright-mcp.sh) y, sin él,
+    // el de la sesión.
+    let pw = std::env::var_os("CLAUDE_PW_OUTPUT_DIR")
+        .map(PathBuf::from)
+        .or_else(|| Some(paths::home().join(".cache/claude/playwright")).filter(|d| d.is_dir()));
+    resolve_shot(f, pw, cwd)
+}
+
+/// `f` si es una imagen: tal cual si es absoluta; si no, relativa al directorio del MCP (`pw`) o, sin
+/// él, al de la sesión.
+fn resolve_shot(f: &str, pw: Option<PathBuf>, cwd: &str) -> String {
+    let p = Path::new(f.trim());
+    let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+    if !matches!(ext.as_deref(), Some("png" | "jpg" | "jpeg")) {
+        return String::new();
+    }
+    if p.is_absolute() {
+        return p.to_string_lossy().into_owned();
+    }
+    match pw.or_else(|| Some(PathBuf::from(cwd)).filter(|_| !cwd.is_empty())) {
+        Some(base) => base.join(p).to_string_lossy().into_owned(),
+        None => String::new(),
+    }
+}
+
 fn tool_input(name: &str, input: &Value) -> String {
     let s = match name {
         "Bash" => input["command"].as_str().map(|s| s.to_string()),
@@ -954,6 +995,21 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_files() {
+        let pw = || Some(PathBuf::from("/pw"));
+        assert_eq!(resolve_shot("/abs/cap.PNG", pw(), "/s"), "/abs/cap.PNG");
+        assert_eq!(resolve_shot("7660/tras.png", pw(), "/s"), "/pw/7660/tras.png");
+        assert_eq!(resolve_shot("./a.jpeg", None, "/s"), "/s/./a.jpeg");
+        assert_eq!(resolve_shot("a.png", None, ""), "");
+        assert_eq!(resolve_shot("/abs/informe.pdf", pw(), "/s"), "");
+        // Sólo la herramienta de capturas, y con nombre de fichero.
+        let input = serde_json::json!({ "filename": "/abs/cap.png" });
+        assert_eq!(screenshot_file("mcp__playwright__browser_take_screenshot", &input, "/s"), "/abs/cap.png");
+        assert_eq!(screenshot_file("mcp__playwright__browser_snapshot", &input, "/s"), "");
+        assert_eq!(screenshot_file("mcp__playwright__browser_take_screenshot", &serde_json::json!({}), "/s"), "");
+    }
 
     #[test]
     fn iso_dates() {

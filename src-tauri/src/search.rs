@@ -375,7 +375,14 @@ mod tests {
         let ts = String::new;
         let items = vec![
             Item::User { ts: ts(), text: "Revisa la Configuración".into(), mid_turn: false, images: vec![] },
-            Item::Tool { ts: ts(), id: "t".into(), name: "Read".into(), summary: "/x/configuracion.md".into(), input: "{}".into() },
+            Item::Tool {
+                ts: ts(),
+                id: "t".into(),
+                name: "Read".into(),
+                summary: "/x/configuracion.md".into(),
+                input: "{}".into(),
+                shot: String::new(),
+            },
             Item::AgentResult {
                 ts: ts(),
                 tool_use_id: "t2".into(),

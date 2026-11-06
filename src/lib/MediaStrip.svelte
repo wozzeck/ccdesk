@@ -20,6 +20,9 @@
   interface FileImg {
     path: string;
     label: string;
+    /** Distingue versiones del mismo fichero (una captura repetida con el mismo nombre): cada una
+     *  se lee de nuevo en lugar de salir la que ya estaba cargada. */
+    v?: string;
   }
   let {
     images = [],
@@ -49,7 +52,7 @@
   }
   const entries = $derived<Entry[]>([
     ...images.map((im) => ({ key: keyOf(im), fetch: () => api.transcriptImage(im.path, im.offset, im.n) })),
-    ...files.map((f) => ({ key: `file|${f.path}`, label: f.label, path: f.path, fetch: () => fileUrl(f.path) })),
+    ...files.map((f) => ({ key: `file|${f.path}|${f.v ?? ''}`, label: f.label, path: f.path, fetch: () => fileUrl(f.path) })),
   ]);
 
   let urls = $state<Record<string, string>>({});

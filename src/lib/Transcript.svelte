@@ -53,6 +53,18 @@
 
   type ToolItem = Extract<Item, { kind: 'tool' }>;
   type ResultItem = Extract<Item, { kind: 'toolResult' }>;
+
+  /** Capturas de Playwright de un grupo de herramientas que salieron bien. La imagen no va en el
+   *  transcript: se lee del fichero, que sigue en disco (si luego se repite con el mismo nombre,
+   *  sale la última). Las que el grupo lee después con Read ya salen con su imagen: no se repiten. */
+  function shotsOf(tools: { item: ToolItem; result?: ResultItem }[]) {
+    const read = new Set(
+      tools.filter((t) => t.item.name === 'Read' && t.result?.images?.length).map((t) => t.item.summary),
+    );
+    return tools
+      .filter((t) => t.item.shot && t.result && !t.result.isError && !read.has(t.item.shot))
+      .map((t) => ({ path: t.item.shot!, label: t.item.shot!.split('/').pop()!, v: t.item.id }));
+  }
   type AgentItem = Extract<Item, { kind: 'agent' }>;
   type AgentResult = Extract<Item, { kind: 'agentResult' }>;
   type TaskNotice = Extract<Item, { kind: 'taskNotice' }>;
@@ -530,7 +542,8 @@
       </details>
       <!-- Lo que Claude ha mirado (fotos, capturas…), a la vista sin desplegar las herramientas. -->
       {@const imgs = ui.showMedia ? row.tools.flatMap((t) => t.result?.images ?? []) : []}
-      {#if imgs.length}<MediaStrip images={imgs} />{/if}
+      {@const shots = ui.showMedia ? shotsOf(row.tools) : []}
+      {#if imgs.length || shots.length}<MediaStrip images={imgs} files={shots} />{/if}
     {:else if row.t === 'agent'}
       <AgentCard
         i={row.i}

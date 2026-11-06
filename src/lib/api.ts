@@ -132,7 +132,7 @@ export type Item =
   | { kind: 'command'; ts: string; name: string; args: string }
   | { kind: 'output'; ts: string; text: string }
   | { kind: 'assistant'; ts: string; msgId: string; text: string; cwd?: string }
-  | { kind: 'tool'; ts: string; id: string; name: string; summary: string; input: string }
+  | { kind: 'tool'; ts: string; id: string; name: string; summary: string; input: string; shot?: string }
   | {
       kind: 'agent';
       ts: string;
