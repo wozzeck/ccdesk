@@ -19,7 +19,12 @@ pub const PREFIX: &str = "cc-";
 pub const DEFAULT_SESSION: &str = "claude";
 const KEY_OPT: &str = "@ccdesk_key";
 /// Claude Code trata como «pegado» un bloque grande que llega de golpe: se teclea troceado.
-const TYPE_CHUNK: usize = 200;
+/// Pegados de como mucho esto: desde unos 1000 caracteres Claude Code los pliega como
+/// «[Pasted text #n]».
+const PASTE_CHUNK: usize = 400;
+
+/// Extensiones con las que Claude Code toma un pegado por ruta de imagen (`\.(png|jpe?g|gif|webp)$`).
+const IMAGE_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 /// Variables heredadas que no deben llegar a las sesiones (anidamiento).
 const STRIP_ENV: &[&str] = &[
@@ -113,6 +118,34 @@ fn literal_pieces(text: &str) -> Vec<&str> {
     v
 }
 
+/// Trozos en que se pega una línea: de como mucho `PASTE_CHUNK` caracteres y cortada antes de la
+/// última letra de cada extensión de imagen. Si un pegado son sólo rutas y alguna acaba en .png,
+/// .jpg…, Claude Code intenta abrirla como imagen y, si no lo es, inserta el texto más tarde, donde
+/// esté entonces el cursor (lo pegado después queda delante). Sin ESC ni CR: dentro de un pegado
+/// entre corchetes, un ESC podría cerrarlo antes de tiempo.
+fn paste_pieces(line: &str) -> Vec<String> {
+    let line: String = line.chars().filter(|&c| c != '\x1b' && c != '\r').collect();
+    // Índices de byte: las extensiones son ASCII y el paso a minúsculas no mueve nada.
+    let lower = line.to_ascii_lowercase();
+    let cuts = lower.match_indices('.').filter_map(|(i, _)| {
+        IMAGE_EXTS.iter().find(|e| lower[i + 1..].starts_with(*e)).map(|e| i + e.len())
+    });
+    let mut out = Vec::new();
+    let mut start = 0;
+    for end in cuts.chain([line.len()]) {
+        let chars: Vec<char> = line[start..end].chars().collect();
+        out.extend(chars.chunks(PASTE_CHUNK).map(|c| c.iter().collect::<String>()));
+        start = end;
+    }
+    out
+}
+
+/// Orden de tmux que pega su entrada estándar en `target` (pegado entre corchetes, `-p`) a través
+/// del búfer `buf`, que luego borra (`-d`).
+fn paste_cmd<'a>(buf: &'a str, target: &'a str) -> Vec<&'a str> {
+    vec!["load-buffer", "-b", buf, "-", ";", "paste-buffer", "-p", "-d", "-b", buf, "-t", target]
+}
+
 fn output(mut c: Command) -> Result<String, String> {
     let out = c
         .stdout(Stdio::piped())
@@ -184,6 +217,24 @@ impl Tmux {
 
     fn run_on(&self, h: &Host, args: &[&str]) -> Result<String, String> {
         self.run(matches!(h, Host::Legacy(_)), args)
+    }
+
+    /// Como `run_on`, con `input` por la entrada estándar de tmux.
+    fn run_on_input(&self, h: &Host, input: &str, args: &[&str]) -> Result<(), String> {
+        use std::io::Write;
+        let mut c = self.base(matches!(h, Host::Legacy(_)));
+        c.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = c.spawn().map_err(|e| format!("tmux: {e}"))?;
+        // Al soltarla, tmux ve el final de la entrada.
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input.as_bytes()).map_err(|e| format!("tmux: {e}"))?;
+        }
+        let out = child.wait_with_output().map_err(|e| format!("tmux: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
     }
 
     fn session_exists(&self) -> bool {
@@ -382,24 +433,35 @@ impl Tmux {
         Ok(())
     }
 
-    /// Teclea un texto de varias líneas como si se escribiera: Ctrl+J para cada salto de
-    /// línea (Claude Code lo inserta sin enviar) y bloques pequeños, para que no lo tome por
-    /// un pegado (lo plegaría como «[Pasted text]» y le llegaría al modelo como texto pegado).
+    /// Escribe un texto de varias líneas en la caja de Claude Code: cada línea pegada (pegado entre
+    /// corchetes, en trozos: `paste_pieces`) y Ctrl+J entre líneas, que lo inserta sin enviar.
+    /// Tecleado con `send-keys -l`, Claude Code lo desordenaba: le llega a trozos y, si uno largo y
+    /// uno corto llegan casi a la vez, inserta el largo con retraso y el corto se queda detrás del
+    /// cursor, al final de todo («…26.11.2.» y, tres líneas más abajo, «zip»). Pegado de una vez, lo
+    /// plegaría como «[Pasted text #1 +7 lines]».
     pub fn type_text(&self, h: &Host, text: &str) -> Result<(), String> {
         for (k, line) in text.split('\n').enumerate() {
             if k > 0 {
                 self.send_keys(h, &["C-j"])?;
             }
-            let chars: Vec<char> = line.trim_end_matches('\r').chars().collect();
-            for chunk in chars.chunks(TYPE_CHUNK) {
-                let s: String = chunk.iter().collect();
-                self.send_literal(h, &s)?;
-                if chars.len() > TYPE_CHUNK {
-                    std::thread::sleep(std::time::Duration::from_millis(15));
-                }
+            for piece in paste_pieces(line) {
+                self.paste(h, &piece)?;
             }
         }
         Ok(())
+    }
+
+    /// Pega `text` en el pane como pegado entre corchetes. Va por la entrada estándar: como
+    /// argumento, tmux se comería un `;` final.
+    fn paste(&self, h: &Host, text: &str) -> Result<(), String> {
+        let buf = format!("ccdesk-{}", std::process::id());
+        let t = target(h);
+        let r = self.run_on_input(h, text, &paste_cmd(&buf, &t));
+        if r.is_err() {
+            // Que no quede en la lista de búferes de tmux, a mano de un prefijo+].
+            let _ = self.run_on(h, &["delete-buffer", "-b", &buf]);
+        }
+        r
     }
 
     /// Orden para la terminal integrada (se ejecuta dentro de un pty).
@@ -455,40 +517,127 @@ mod tests {
         assert!(literal_pieces("").is_empty());
     }
 
-    /// Con un tmux de verdad, en un servidor propio y aislado: lo tecleado llega tal cual.
+    /// Servidor tmux propio y aislado para las pruebas: siempre con `-L` (con `$TMUX` puesto, sin
+    /// él se hablaría con el servidor de quien corre los tests) y sin `TMUX` en el entorno.
+    struct Server(String);
+    impl Server {
+        fn new(tag: &str) -> Self {
+            Server(format!("ccdesk-test-{tag}-{}", std::process::id()))
+        }
+        fn tm(&self, args: &[&str]) -> Result<String, String> {
+            let mut c = Command::new("tmux");
+            clean_env(&mut c);
+            c.stdin(Stdio::null()).args(["-L", &self.0, "-f", "/dev/null"]).args(args);
+            output(c)
+        }
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            // tmux deja el fichero del socket al cerrar el servidor.
+            let sock = self.tm(&["display-message", "-p", "#{socket_path}"]);
+            let _ = self.tm(&["kill-server"]);
+            if let Ok(p) = sock {
+                let _ = std::fs::remove_file(p.trim());
+            }
+        }
+    }
+    fn wait(ok: &dyn Fn() -> bool) {
+        for _ in 0..60 {
+            if ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Lo que Claude Code tomaría por ruta(s) de imagen (y abriría aparte, con retraso).
+    fn claude_image_path(s: &str) -> bool {
+        let t = s.trim();
+        let t = ['"', '\''].iter().find_map(|q| t.strip_prefix(*q).and_then(|x| x.strip_suffix(*q))).unwrap_or(t);
+        let low = t.to_ascii_lowercase();
+        IMAGE_EXTS.iter().any(|e| low.ends_with(&format!(".{e}")))
+    }
+
     #[test]
-    fn literal_pieces_real_tmux() {
-        struct Server(String);
-        impl Server {
-            fn tm(&self, args: &[&str]) -> Result<String, String> {
-                let mut c = Command::new("tmux");
-                clean_env(&mut c);
-                c.stdin(Stdio::null()).args(["-L", &self.0, "-f", "/dev/null"]).args(args);
-                output(c)
-            }
+    fn paste_pieces_cuts() {
+        let p = |s: &str| paste_pieces(s);
+        assert_eq!(p("hola, ¿qué tal?"), ["hola, ¿qué tal?"]);
+        assert!(p("").is_empty());
+        assert_eq!(p("/home/w/.cache/ccdesk/pegados/pegado-1.png"), ["/home/w/.cache/ccdesk/pegados/pegado-1.pn", "g"]);
+        assert_eq!(p("'/a/b.JPG'"), ["'/a/b.JP", "G'"]);
+        assert_eq!(p("/a/1.png /a/2.jpeg"), ["/a/1.pn", "g /a/2.jpe", "g"]);
+        assert_eq!(p("sin\x1b escapes\r"), ["sin escapes"]);
+        let long = "ñandú ".repeat(170);
+        let pieces = p(&long);
+        assert_eq!(pieces.len(), 3);
+        assert!(pieces.iter().all(|x| x.chars().count() <= PASTE_CHUNK));
+        // Cortar no cambia el texto y ningún trozo parece una ruta de imagen.
+        for s in [
+            "mira esto: /home/w/x/pegado-17938.png",
+            "\"/tmp/a b/foto.webp\"",
+            "/x/a.png /x/b.gif /x/c.jpg",
+            "fichero.PNG, otro.jpeg y nada más",
+            "/no/es/imagen.md",
+            &format!("{}.png", "x".repeat(PASTE_CHUNK - 2)),
+        ] {
+            let pieces = p(s);
+            assert_eq!(pieces.concat(), s, "{s}");
+            assert!(pieces.iter().all(|x| !claude_image_path(x) && !x.is_empty()), "{s}: {pieces:?}");
         }
-        impl Drop for Server {
-            fn drop(&mut self) {
-                // tmux deja el fichero del socket al cerrar el servidor.
-                let sock = self.tm(&["display-message", "-p", "#{socket_path}"]);
-                let _ = self.tm(&["kill-server"]);
-                if let Ok(p) = sock {
-                    let _ = std::fs::remove_file(p.trim());
-                }
-            }
-        }
-        let sv = Server(format!("ccdesk-test-{}", std::process::id()));
+    }
+
+    /// Con un tmux de verdad: lo pegado llega tal cual, entre las marcas de pegado si la aplicación
+    /// las ha pedido (como Claude Code).
+    #[test]
+    fn paste_real_tmux() {
+        let sv = Server::new("paste");
         if sv.tm(&["-V"]).is_err() {
             return; // sin tmux
         }
-        let wait = |ok: &dyn Fn() -> bool| {
-            for _ in 0..60 {
-                if ok() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+        // `cat -vT` enseña los bytes de control y los no ASCII con letras: el ESC de las marcas
+        // como «^[», el tabulador como «^I», los de la «ñ» como «M-…».
+        let cat_v = |s: &str| -> String {
+            let one = |b: u8| match b {
+                0..=31 => format!("^{}", (b + 64) as char),
+                127 => "^?".to_string(),
+                _ => (b as char).to_string(),
+            };
+            s.bytes().map(|b| if b >= 128 { format!("M-{}", one(b - 128)) } else { one(b) }).collect()
         };
+        sv.tm(&["new-session", "-d", "-s", "t", "-x", "200", "-y", "20", "printf '\\033[?2004h'; stty -echo; exec cat -vT"]).unwrap();
+        wait(&|| sv.tm(&["display-message", "-p", "-t", "t", "#{pane_current_command}"]).is_ok_and(|c| c.trim() == "cat"));
+        let id = sv.tm(&["display-message", "-p", "-t", "t", "#{window_id}"]).unwrap();
+        let h = Host::Window(id.trim().to_string());
+        let cases = ["uno;", "ñandú\tdos", r"tres\;", "let x = 1;"];
+        for s in cases {
+            // La misma orden que `Tmux::paste`, contra el servidor de prueba.
+            let mut c = Command::new("tmux");
+            clean_env(&mut c);
+            c.args(["-L", &sv.0]).args(paste_cmd("b", &target(&h)));
+            c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+            let mut child = c.spawn().unwrap();
+            std::io::Write::write_all(&mut child.stdin.take().unwrap(), s.as_bytes()).unwrap();
+            assert!(child.wait().unwrap().success());
+            sv.tm(&["send-keys", "-t", "t", "Enter"]).unwrap();
+        }
+        let lines = || -> Vec<String> {
+            let out = sv.tm(&["capture-pane", "-p", "-t", "t"]).unwrap_or_default();
+            out.lines().filter(|l| !l.is_empty()).map(String::from).collect()
+        };
+        wait(&|| lines().len() >= cases.len());
+        let want: Vec<String> = cases.iter().map(|s| format!("^[[200~{}^[[201~", cat_v(s))).collect();
+        assert_eq!(lines(), want);
+        // El búfer con nombre no se queda en tmux.
+        assert_eq!(sv.tm(&["list-buffers"]).unwrap_or_default().trim(), "");
+    }
+
+    /// Con un tmux de verdad, en un servidor propio y aislado: lo tecleado llega tal cual.
+    #[test]
+    fn literal_pieces_real_tmux() {
+        let sv = Server::new("literal");
+        if sv.tm(&["-V"]).is_err() {
+            return; // sin tmux
+        }
         sv.tm(&["new-session", "-d", "-s", "t", "-x", "200", "-y", "20", "stty -echo; exec cat"]).unwrap();
         wait(&|| sv.tm(&["display-message", "-p", "-t", "t", "#{pane_current_command}"]).is_ok_and(|c| c.trim() == "cat"));
         let cases = ["uno;", r"dos\;", r"tres\\;", "i;;", ";", "a; b", r"c\", "let x = 1;", "ñandú;"];

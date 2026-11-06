@@ -238,10 +238,14 @@
   // está en vuelo: el real espera y entra al aterrizar, en el mismo sitio, sin salto. Sólo cuentan
   // los items posteriores al envío, para no confundirlo con un mensaje igual anterior.
   type QueueAdd = Extract<Item, { kind: 'queueAdd' }>;
+  /** Para comparar lo enviado con lo que apunta Claude Code, que no guarda los blancos tal cual (un
+   *  tabulador tecleado lo apunta como espacios): cuentan las palabras, no los blancos entre ellas. */
+  const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
+  /** `text` viene ya pasado por `squash`. */
   const isMatch = (it: Item, text: string) =>
-    (it.kind === 'user' && it.text.trim() === text) ||
-    (it.kind === 'queueAdd' && it.text.trim() === text) ||
-    (it.kind === 'command' && (it.args ? `${it.name} ${it.args}` : it.name) === text);
+    (it.kind === 'user' && squash(it.text) === text) ||
+    (it.kind === 'queueAdd' && squash(it.text) === text) ||
+    (it.kind === 'command' && squash(it.args ? `${it.name} ${it.args}` : it.name) === text);
   /** Apunte de la cola sin texto que aún no se ha atribuido a ningún envío. */
   const isBlankQueued = (it: Item): it is QueueAdd =>
     it.kind === 'queueAdd' && !it.system && !it.text.trim() && outbox.recall(sessionKey, it.ts) === undefined;
@@ -267,7 +271,8 @@
         outbox.base.set(o.id, startIndex + b);
       }
       const from = Math.max(0, outbox.base.get(o.id)! - startIndex);
-      let j = find(from, (it) => isMatch(it, o.text));
+      const text = squash(o.text);
+      let j = find(from, (it) => isMatch(it, text));
       if (j < 0 && !o.waiting) j = find(from, isBlankQueued);
       if (j >= 0) {
         m.set(o.id, j);
@@ -365,7 +370,7 @@
   });
 
   /** Identidad de una burbuja tuya entre sus estados (provisional, en cola, real). */
-  const bubbleId = (text: string) => `${sessionKey}\u0000${text.trim()}`;
+  const bubbleId = (text: string) => `${sessionKey}\u0000${squash(text)}`;
 
   function toolsLabel(tools: { item: ToolItem }[]): string {
     const counts = new Map<string, number>();

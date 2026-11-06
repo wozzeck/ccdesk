@@ -1831,8 +1831,8 @@ fn type_and_enter(core: &Core, key: &str, h: &Host, text: &str) -> Result<(), St
     if !clear_box(&core.tmux, h) {
         log(&format!("{key}: no se ha podido vaciar la caja de texto de la TUI"));
     }
-    // Tecleado, no pegado: un pegado grande se pliega como «[Pasted text]» y le llega al
-    // modelo como texto pegado de otra fuente.
+    // Pegado línea a línea y en trozos (`Tmux::type_text`): ni tecleado, que Claude Code lo
+    // desordena, ni de una vez, que lo pliega como «[Pasted text]».
     core.tmux.type_text(h, text)?;
     std::thread::sleep(Duration::from_millis(120));
     core.tmux.send_keys(h, &["Enter"])
