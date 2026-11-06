@@ -1794,6 +1794,14 @@ pub async fn transcript_find(
     })
 }
 
+/// Item de la conversación abierta con la coincidencia del resultado de la búsqueda de sesiones
+/// (`search::locate`): al pulsarlo, la conversación va ahí.
+#[tauri::command]
+pub async fn transcript_locate(core: State<'_, Shared>, key: String, query: String) -> Result<Option<usize>, String> {
+    let tc = core.tcache.lock().unwrap();
+    Ok(tc.as_ref().filter(|c| c.key == key).and_then(|c| crate::search::locate(&c.items, &query)))
+}
+
 /// Sesiones cuya conversación contiene el texto (sobre el índice, que un hilo pone al día cada 10 s).
 #[tauri::command]
 pub async fn search_sessions(core: State<'_, Shared>, query: String) -> Result<Vec<crate::search::Hit>, String> {

@@ -46,6 +46,7 @@
   let showPrefs = $state(false);
   /** Petición de abrir el transcript de un subagente (desde el árbol del panel izquierdo). */
   let agentReq = $state<{ key: string; id: string; title: string; n: number } | null>(null);
+  let findReq = $state<{ key: string; text: string; n: number } | null>(null);
   let notesOpen = $state(true);
   let toastMsg = $state<string | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -451,6 +452,12 @@
     agentReq = { key, id: a.toolUseId, title: a.description, n: Date.now() };
   }
 
+  /** Resultado de la búsqueda de sesiones: a la sesión y a la coincidencia (Conversation). */
+  function findIn(key: string, text: string) {
+    if (activeKey !== key) select(key);
+    findReq = { key, text, n: Date.now() };
+  }
+
   function toggleNotes(open = !notesOpen) {
     notesOpen = open;
     saveSettings({ notesOpen });
@@ -560,6 +567,7 @@
             .then(applySnap)
             .catch((e) => toast(errText(e)))}
         onOpenAgent={openAgent}
+        onFind={findIn}
       />
     {/if}
   </aside>
@@ -615,7 +623,7 @@
          cerrarla vuelve donde estaba. -->
     <div class="conv-area" class:term-full={drawerOpen && !!active}>
     {#if active && snap}
-      <Conversation bind:this={conversation} session={active} onToast={toast} openAgent={agentReq} />
+      <Conversation bind:this={conversation} session={active} onToast={toast} openAgent={agentReq} {findReq} />
     {:else}
       <div class="welcome">
         <h2>ccdesk</h2>

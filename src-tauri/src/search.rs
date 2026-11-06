@@ -223,6 +223,19 @@ pub fn search(core: &Core, query: &str) -> Vec<Hit> {
     out
 }
 
+/// Item del mensaje cuyo fragmento enseña `search`: el más reciente de lo escrito o contestado que
+/// contiene `query`, con el mismo criterio. Al pulsar el resultado, la conversación va ahí.
+pub fn locate(items: &[Item], query: &str) -> Option<usize> {
+    let q = fold(query.trim());
+    if q.chars().count() < 2 {
+        return None;
+    }
+    items.iter().rposition(|it| match it {
+        Item::User { text, .. } | Item::Assistant { text, .. } => fold(text).contains(&q),
+        _ => false,
+    })
+}
+
 /// Coincidencias de Ctrl+F en un item de la conversación (`find_items`).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Found {
@@ -389,6 +402,11 @@ mod tests {
         assert_eq!(find_items(&items, "CONFIGURACION**  del"), vec![f(4, 1)]);
         assert!(find_items(&items, "  ").is_empty());
         assert!(find_items(&items[..4], "otra vez").is_empty());
+        // El resultado de la búsqueda de sesiones: sólo lo escrito o contestado, el más reciente.
+        assert_eq!(locate(&items, " CONFIGURACIÓN "), Some(4));
+        assert_eq!(locate(&items[..4], "configuracion"), Some(0));
+        assert_eq!(locate(&items, "configuracion.md"), None); // sólo en la herramienta
+        assert_eq!(locate(&items, "c"), None);
     }
 
     #[test]

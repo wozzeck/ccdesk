@@ -13,8 +13,10 @@
     onToast: (m: string) => void;
     /** Abrir el transcript de un subagente pedido desde fuera (árbol del panel izquierdo). */
     openAgent?: { key: string; id: string; title: string; n: number } | null;
+    /** Ir a la coincidencia de un resultado de la búsqueda de sesiones (panel izquierdo). */
+    findReq?: { key: string; text: string; n: number } | null;
   }
-  let { session, onToast, openAgent = null }: Props = $props();
+  let { session, onToast, openAgent = null, findReq = null }: Props = $props();
 
   let items = $state<Item[]>([]);
   let startIndex = $state(0);
@@ -26,6 +28,8 @@
   const sending = $derived(outbox.items.some((o) => o.key === session.key));
   let path = '';
   let loadedId = '';
+  /** Sesión cuya conversación está pintada (la de `items`). */
+  let shownKey = $state('');
   let scroller: HTMLDivElement;
   let inner: HTMLDivElement;
 
@@ -50,6 +54,7 @@
       stopGlide();
       toBottom();
       stuck = true;
+      shownKey = key;
       finder?.reloaded();
     } catch (e) {
       onToast(errText(e));
@@ -179,7 +184,9 @@
   const loadMore = () => prepend(300);
 
   // ── Ctrl+F: barra de búsqueda en la conversación (FindBar) ──
-  let finding = $state<{ root: HTMLElement; scroller: HTMLElement; initial: string } | null>(null);
+  let finding = $state<{ root: HTMLElement; scroller: HTMLElement; initial: string; startAt?: number | null } | null>(
+    null,
+  );
   let finder = $state<ReturnType<typeof FindBar>>();
   /** Lo seleccionado en la conversación, si es una línea corta (para buscarlo). */
   function selected(): string {
@@ -196,6 +203,26 @@
       if (root) finding = { root, scroller, initial: sel };
     }
   }
+  // Resultado de la búsqueda de sesiones: la barra con lo buscado, empezando en el mensaje del
+  // fragmento (el más reciente de lo escrito o contestado que lo contiene; la barra carga hasta él
+  // si no lo estaba). Se espera a que esté pintada la conversación de esa sesión.
+  let handledFind = 0;
+  $effect(() => {
+    const r = findReq;
+    if (r && r.n !== handledFind && r.key === sessionKey && shownKey === sessionKey) {
+      handledFind = r.n;
+      goToHit(r.key, r.text);
+    }
+  });
+  async function goToHit(key: string, text: string) {
+    const index = await api.transcriptLocate(key, text).catch(() => null);
+    if (key !== session.key) return;
+    finding = null; // la barra se abre de nuevo: con lo buscado y desde ese mensaje
+    await tick();
+    const root = inner.querySelector<HTMLElement>(':scope > .transcript');
+    if (root) finding = { root, scroller, initial: text, startAt: index };
+  }
+
   function closeFind() {
     finding = null;
     stuck = atBottom();
@@ -271,6 +298,7 @@
       sessionKey={session.key}
       {startIndex}
       initial={finding.initial}
+      startAt={finding.startAt ?? null}
       beside={!!viewer}
       loadOlder={(index) => prepend(startIndex - index)}
       onNav={() => {

@@ -27,6 +27,9 @@
     startIndex: number;
     /** Lo seleccionado en la conversación (si no hay nada, se abre con lo último buscado). */
     initial: string;
+    /** Abierta desde un resultado de la búsqueda de sesiones: el item de su mensaje. Se carga hasta
+     *  él si hace falta y se empieza en su primera coincidencia (si no tiene, como siempre). */
+    startAt: number | null;
     /** Panel del subagente abierto: la barra va a su izquierda. */
     beside: boolean;
     /** Carga lo anterior hasta el item `index`. */
@@ -35,7 +38,8 @@
     onNav: () => void;
     onClose: () => void;
   }
-  let { root, scroller, sessionKey, startIndex, initial, beside, loadOlder, onNav, onClose }: Props = $props();
+  let { root, scroller, sessionKey, startIndex, initial, startAt, beside, loadOlder, onNav, onClose }: Props =
+    $props();
 
   const CAP = 10000;
   /** Items de más que se cargan por encima de una coincidencia que estaba sin cargar. */
@@ -93,13 +97,50 @@
     return () => clearTimeout(t);
   });
 
+  // svelte-ignore state_referenced_locally
+  let aim = startAt; // sólo en la primera búsqueda
+
   /** Busca lo escrito; la actual pasa a la más próxima a la que había (o a lo que se ve). */
   function run() {
+    if (aim !== null) {
+      const at = aim;
+      aim = null;
+      jump(at);
+      return;
+    }
     const anchor = searched.trim() ? curRange : null;
     research(query, anchor ? near(anchor) : nearView);
     searched = last = query;
     show(true);
     fetchOlder(query);
+  }
+
+  /** A la primera coincidencia del mensaje del item `at`, cargando antes lo anterior hasta él si
+   *  no lo estaba (si no tiene ninguna, como al abrir). */
+  async function jump(at: number) {
+    loading = true;
+    searched = last = query;
+    onNav();
+    try {
+      if (at < startIndex) await loadOlder(Math.max(0, at - CONTEXT));
+      const row = rowOf(at);
+      research(searched, row ? within(row) : nearView);
+      show(true);
+    } finally {
+      loading = false;
+    }
+    fetchOlder(searched);
+  }
+
+  /** La fila del item `index`: la suya o, si va junto con los anteriores (textos seguidos de
+   *  Claude), la del primero. */
+  function rowOf(index: number): Element | null {
+    let row: Element | null = null;
+    for (const el of root.querySelectorAll<HTMLElement>('[data-i]')) {
+      if (Number(el.dataset.i) > index) break;
+      row = el;
+    }
+    return row;
   }
 
   /** Busca `q` en lo cargado; `choose` elige la actual. No pinta (eso es `show`). */
@@ -145,6 +186,12 @@
   }
   /** La que empieza donde `a` o la anterior más próxima (o la primera, si no hay anterior). */
   const near = (a: Range) => (list: Match[]) => preferShown(list, Math.max(0, before(list, a, true)));
+
+  /** La primera dentro de `el` (si no hay ninguna, `nearView`). */
+  const within = (el: Element) => (list: Match[]) => {
+    const k = list.findIndex((m) => el.contains(m.sn));
+    return k >= 0 ? k : nearView(list);
+  };
 
   /** La más reciente de las que quedan por encima del final de la vista (o la primera de debajo). */
   function nearView(list: Match[]): number {

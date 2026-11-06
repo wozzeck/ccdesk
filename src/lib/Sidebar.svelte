@@ -16,6 +16,8 @@
     /** `order` null: orden por recientes, sólo se han movido las fijadas. */
     onLayout: (pinned: string[], order: string[] | null) => void;
     onOpenAgent: (key: string, a: AgentRow) => void;
+    /** Pulsado el fragmento de un resultado: a la sesión y a esa coincidencia de la conversación. */
+    onFind: (key: string, text: string) => void;
   }
   let {
     snap,
@@ -27,6 +29,7 @@
     onAction,
     onLayout,
     onOpenAgent,
+    onFind,
   }: Props = $props();
 
   // ── buscador ──
@@ -382,7 +385,7 @@
   {#if q && hits[s.key]}
     {@const h = hits[s.key]}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="hit" onclick={() => onSelect(s.key)}>
+    <div class="hit" onclick={() => onFind(s.key, query.trim())}>
       <span class="hit-text">{h.before}<mark>{h.hit}</mark>{h.after}</span>
       {#if h.count > 1}<span class="hit-n" title="{h.count} coincidencias en la conversación">{h.count}</span>{/if}
     </div>

@@ -216,6 +216,9 @@ export const api = {
   /** Del más reciente al más antiguo. */
   transcriptFind: (key: string, query: string, before: number) =>
     invoke<FindHit[]>('transcript_find', { key, query, before }),
+  /** Item del mensaje que enseña el resultado de la búsqueda de sesiones (null: no sale). */
+  transcriptLocate: (key: string, query: string) =>
+    invoke<number | null>('transcript_locate', { key, query }),
   sessionNew: (cwd: string, name?: string, model?: string, effort?: string) =>
     invoke<string>('session_new', { cwd, name, model, effort }),
   /** Selector de carpetas del sistema; empieza en `start`. null si se cancela. */
