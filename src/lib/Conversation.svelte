@@ -233,21 +233,25 @@
   // entonces: cada instantánea del sondeo trae un objeto `session` nuevo (para la misma sesión), y
   // vigilando el objeto se cerraba solo en cuanto la sesión cambiaba en algo (subagentes en marcha).
   let viewer = $state<{ id: string; title: string } | null>(null);
+  /** El panel del subagente, contraído en su pestaña (se contrae al pulsar fuera). */
+  let viewerCollapsed = $state(false);
   const sessionKey = $derived(session.key);
   $effect(() => {
     sessionKey;
     viewer = null;
     finding = null; // la búsqueda es de cada conversación
   });
+  /** Abrir un subagente, o el mismo otra vez estando contraído, lo enseña desplegado. */
   function showAgent(id: string, title: string) {
     viewer = { id, title };
+    viewerCollapsed = false;
   }
   let handledReq = 0;
   $effect(() => {
     const r = openAgent;
     if (r && r.n !== handledReq && r.key === sessionKey) {
       handledReq = r.n;
-      viewer = { id: r.id, title: r.title };
+      showAgent(r.id, r.title);
     }
   });
 
@@ -299,7 +303,7 @@
       {startIndex}
       initial={finding.initial}
       startAt={finding.startAt ?? null}
-      beside={!!viewer}
+      beside={!!viewer && !viewerCollapsed}
       loadOlder={(index) => prepend(startIndex - index)}
       onNav={() => {
         stopGlide();
@@ -313,6 +317,8 @@
       toolUseId={viewer.id}
       title={viewer.title}
       live={session.status !== 'stopped'}
+      running={session.agents.some((a) => a.toolUseId === viewer?.id)}
+      bind:collapsed={viewerCollapsed}
       onClose={() => (viewer = null)}
       {onToast}
       onOpenAgent={showAgent}
