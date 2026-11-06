@@ -24,7 +24,8 @@ pub struct Core {
     pub pty: Mutex<Option<Pty>>,
     pub last_snap: Mutex<String>,
     pub views: Mutex<Vec<SessionView>>,
-    /// Transcripts de subagentes de la sesión activa, por tool_use_id de la llamada.
+    /// Transcripts de subagentes abiertos (de la sesión activa o, desde la barra lateral, de otra),
+    /// por tool_use_id de la llamada.
     pub agents: Mutex<HashMap<String, Cache>>,
     /// Dónde vive cada sesión gestionada viva (ventana tmux o sesión antigua).
     pub hosts: Mutex<HashMap<String, Host>>,
@@ -2618,13 +2619,24 @@ pub struct AgentActivity {
     finished: bool,
 }
 
-/// `subagents/agent-<id>.jsonl` de la sesión activa cuyo `.meta.json` apunta a esta llamada.
+/// `subagents/agent-<id>.jsonl` cuyo `.meta.json` apunta a esta llamada: primero en la sesión
+/// activa y, si no, en las demás vivas. Un subagente de otra sesión abierto desde la barra lateral
+/// se pide antes de que `transcript_open` haya cambiado la activa.
 fn agent_file(core: &Core, tool_use_id: &str) -> Option<(PathBuf, bool)> {
-    let main = core.tcache.lock().unwrap().as_ref()?.path.clone();
-    let dir = main.with_extension("").join("subagents");
-    for e in std::fs::read_dir(&dir).ok()?.flatten() {
+    let active = core.tcache.lock().unwrap().as_ref().map(|c| c.path.with_extension("").join("subagents"));
+    let mut dirs: Vec<PathBuf> = active.into_iter().collect();
+    for d in core.agent_dirs.lock().unwrap().values().flatten() {
+        if !dirs.contains(d) {
+            dirs.push(d.clone());
+        }
+    }
+    dirs.iter().find_map(|d| agent_in(d, tool_use_id))
+}
+
+fn agent_in(dir: &std::path::Path, tool_use_id: &str) -> Option<(PathBuf, bool)> {
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
-        let name = p.file_name()?.to_string_lossy().into_owned();
+        let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
         let Some(stem) = name.strip_suffix(".meta.json") else {
             continue;
         };
@@ -3279,6 +3291,21 @@ while True:
         let rows = super::scan_agents(&d);
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].tool_use_id.as_str(), rows[0].agent_id.as_str()), ("tu1", "a1"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn agent_in_dir() {
+        let d = std::env::temp_dir().join(format!("ccdesk-agent-in-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let w = |n: &str, s: &str| std::fs::write(d.join(n), s).unwrap();
+        w("agent-a1.meta.json", r#"{"toolUseId":"tu1"}"#);
+        w("agent-a2.meta.json", r#"{"toolUseId":"tu2","finished":true}"#);
+        w("agent-a3.meta.json", "no es json");
+        assert_eq!(super::agent_in(&d, "tu1"), Some((d.join("agent-a1.jsonl"), false)));
+        assert_eq!(super::agent_in(&d, "tu2"), Some((d.join("agent-a2.jsonl"), true)));
+        assert_eq!(super::agent_in(&d, "tu9"), None);
+        assert_eq!(super::agent_in(&d.join("no-existe"), "tu1"), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 
