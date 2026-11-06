@@ -31,6 +31,9 @@ pub struct Settings {
     /// Orden de la lista de sesiones: `manual` (arrastrando) o `recent` (actividad más reciente
     /// arriba; las fijadas siguen en su orden manual).
     pub session_order: String,
+    /// Modo de permisos con el que arrancan las sesiones nuevas (`--permission-mode`). Vacío: el
+    /// de la configuración de Claude Code.
+    pub new_session_mode: String,
 }
 
 impl Default for Settings {
@@ -48,6 +51,7 @@ impl Default for Settings {
             notify_attention: true,
             show_media: true,
             session_order: "manual".into(),
+            new_session_mode: String::new(),
         }
     }
 }

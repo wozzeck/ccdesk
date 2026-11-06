@@ -2002,20 +2002,28 @@ details.agent-sec .msg {
   padding-top: 5vh;
 }
 .modal.prefs {
+  width: min(1000px, 94vw);
   max-height: 90vh;
 }
+/* Columnas de al menos 270 px: tres si caben, si no dos o una (la que no cabe baja). */
 .prefs-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  align-items: start;
+  gap: 12px 18px;
   /* hueco para el título del primer apartado, que asoma por encima de su borde */
   padding: 4px 4px 2px 0;
   margin-right: -4px;
 }
-.prefs-body > *,
+.prefs .pcol {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.prefs .pcol > *,
 .modal.prefs > * {
   flex-shrink: 0;
 }
@@ -2045,16 +2053,21 @@ details.agent-sec .msg {
   color: var(--muted);
   background: var(--bg);
 }
+/* En una columna estrecha el texto puede ocupar dos líneas: la altura fija de `.row` lo montaría
+   sobre la siguiente. */
 .prefs label.row {
+  height: auto;
+  min-height: 26px;
   flex-direction: row;
   align-items: center;
   gap: 6px;
   color: var(--text);
   font-size: 13px;
 }
+/* Dos y dos: en una columna caben tres y el cuarto quedaría solo debajo. */
 .prefs .themes {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
 .prefs .theme-opt {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, errText, type RateWindow, type SessionView, type Snapshot } from './api';
   import Dropdown from './Dropdown.svelte';
+  import { MODE_NAMES } from './modes';
 
   interface Props {
     status: any | null;
@@ -16,15 +17,7 @@
   let { status, quota, usage, session, mode, allowYolo, now, onToast, ask }: Props = $props();
 
   const TZ = 'Europe/Madrid';
-  // Sólo nombres para mostrar los modos; las opciones son las que ofrece la sesión.
-  const MODE_NAMES: Record<string, string> = {
-    manual: 'Manual',
-    acceptEdits: 'Aceptar ediciones',
-    plan: 'Plan',
-    auto: 'Auto',
-    dontAsk: 'No preguntar',
-    bypassPermissions: 'YOLO',
-  };
+  // MODE_NAMES sólo da los nombres; las opciones son las que ofrece la sesión.
   const modeOpt = (v: string) => ({ v, l: MODE_NAMES[v] ?? v, cls: v === 'bypassPermissions' ? 'yolo' : '' });
 
   // Opciones reales leídas de los selectores de Claude Code al abrir cada desplegable.

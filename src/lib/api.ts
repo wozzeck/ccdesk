@@ -95,6 +95,8 @@ export interface Settings {
   showMedia: boolean;
   /** Orden de la lista: manual (arrastrando) o por actividad reciente (las fijadas, manual). */
   sessionOrder: 'manual' | 'recent';
+  /** Modo de permisos con el que arrancan las sesiones nuevas ('' = el de Claude Code). */
+  newSessionMode: string;
 }
 
 export interface RateWindow {

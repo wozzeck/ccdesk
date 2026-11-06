@@ -544,6 +544,19 @@ fn launch_flags(core: &Core) -> Vec<String> {
     }
 }
 
+/// Modos de permisos que acepta `--permission-mode` (Claude Code 2.1).
+const PERMISSION_MODES: [&str; 6] = ["manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
+
+/// `--permission-mode` con el que arranca una sesión nueva según la preferencia. Ninguno si está
+/// vacía (manda la configuración de Claude Code), si Claude Code no conoce el modo (no arrancaría)
+/// o si es YOLO sin estar permitido.
+fn mode_flags(mode: &str, allow_yolo: bool) -> Vec<String> {
+    if !PERMISSION_MODES.contains(&mode) || (mode == "bypassPermissions" && !allow_yolo) {
+        return vec![];
+    }
+    vec!["--permission-mode".into(), mode.into()]
+}
+
 /// Transcript de una sesión: la ruta que dejó el statusline o, si no, la búsqueda por carpeta.
 pub(crate) fn transcript_of(sid: &str, cwd: &str) -> Option<PathBuf> {
     let hint = read_status(sid).and_then(|s| s["transcript_path"].as_str().map(String::from));
@@ -1401,6 +1414,11 @@ pub async fn session_new(
         sid.clone(),
     ];
     argv.extend(launch_flags(&core));
+    let mode = {
+        let s = &core.persist.lock().unwrap().settings;
+        mode_flags(&s.new_session_mode, s.allow_yolo)
+    };
+    argv.extend(mode);
     if let Some(m) = model.filter(|s| !s.is_empty()) {
         argv.push("--model".into());
         argv.push(m);
@@ -1648,7 +1666,14 @@ pub async fn settings_update(core: State<'_, Shared>, settings: Settings) -> Res
             _ => "system".to_string(),
         };
         let zoom = if settings.zoom.is_finite() { settings.zoom.clamp(0.5, 2.5) } else { 1.0 };
-        p.settings = Settings { tmux_session: name, theme, zoom, ..settings };
+        // Se guarda el modo que se va a usar: uno desconocido, o YOLO sin permitirlo, queda en
+        // «el de Claude Code».
+        let new_session_mode = if mode_flags(&settings.new_session_mode, settings.allow_yolo).is_empty() {
+            String::new()
+        } else {
+            settings.new_session_mode.clone()
+        };
+        p.settings = Settings { tmux_session: name, theme, zoom, new_session_mode, ..settings };
         state::save(&p);
     }
     Ok(build(&core))
@@ -2904,6 +2929,18 @@ mod tests {
         assert_eq!(detect_mode("⏸ plan mode on (shift+tab to cycle)"), Some("plan"));
         assert_eq!(detect_mode("⏵⏵ bypass permissions on (shift+tab to cycle)"), Some("bypassPermissions"));
         assert_eq!(detect_mode("nada"), None);
+    }
+
+    #[test]
+    fn new_session_mode_flag() {
+        use super::mode_flags;
+        assert_eq!(mode_flags("plan", false), ["--permission-mode", "plan"]);
+        assert_eq!(mode_flags("bypassPermissions", true), ["--permission-mode", "bypassPermissions"]);
+        // El de Claude Code, YOLO sin permitirlo y modos que no acepta (default ya no existe).
+        assert!(mode_flags("", true).is_empty());
+        assert!(mode_flags("bypassPermissions", false).is_empty());
+        assert!(mode_flags("default", true).is_empty());
+        assert!(mode_flags("plan --dangerously-skip-permissions", true).is_empty());
     }
 
     /// CCDESK_TEST_CLIP=1 cargo test --release clip_real -- --nocapture (lee el portapapeles)
