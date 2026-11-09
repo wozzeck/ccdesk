@@ -1863,18 +1863,35 @@ details.agent-sec .msg {
 .agent-viewer.collapsed {
   visibility: hidden;
 }
-.av-tab {
+/* Pestañas de los subagentes de la sesión (los que trabajan y el abierto): a la izquierda de la
+   barra de desplazamiento de la conversación, que queda a la vista. Si no caben, se reparten el
+   alto y cada título se corta con «…». */
+.av-tabs {
   position: absolute;
   top: 52px; /* debajo de la barra de Ctrl+F */
-  right: 0;
+  bottom: 16px;
+  right: 10px; /* el ancho de la barra de desplazamiento */
   z-index: 20;
+  /* Filas de su alto natural mientras quepan; si no, el alto se reparte a partes iguales (con
+     flex, WebKitGTK no las encogía del todo y la última quedaba bajo la caja de texto). */
+  display: grid;
+  grid-auto-rows: minmax(0, max-content);
+  align-content: start;
+  row-gap: 6px;
+  overflow: hidden;
+  pointer-events: none; /* sólo las pestañas: lo de debajo sigue siendo la conversación */
+}
+.av-tab {
+  pointer-events: auto;
+  min-height: 0;
+  max-height: 40vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   width: 26px;
-  max-height: 45%;
   padding: 8px 0;
+  overflow: hidden;
   background: var(--bg);
   border: 1px solid var(--border);
   border-right: none;
@@ -1883,11 +1900,16 @@ details.agent-sec .msg {
   font-size: 12px;
 }
 .av-tab-ic {
+  flex: none;
   color: var(--muted);
 }
+.av-tab .spinner {
+  flex: none;
+}
 .av-tab-title {
-  writing-mode: vertical-rl;
+  flex: 0 1 auto;
   min-height: 0;
+  writing-mode: vertical-rl;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

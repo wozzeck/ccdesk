@@ -1,19 +1,16 @@
 <script lang="ts">
-  // Panel lateral con la conversación completa de un subagente. Pulsar fuera lo contrae a una
-  // pestaña en el borde derecho y pulsarla lo vuelve a abrir como estaba: contraído sigue montado,
-  // con lo cargado y el punto de lectura.
+  // Panel lateral con la conversación completa de un subagente. Pulsar fuera lo contrae a su
+  // pestaña (las pinta Conversation) y pulsarla lo vuelve a abrir como estaba: contraído sigue
+  // montado, con lo cargado y el punto de lectura.
   import { onMount, tick } from 'svelte';
   import { api, errText, type Item } from './api';
-  import Spinner from './Spinner.svelte';
   import Transcript from './Transcript.svelte';
 
   interface Props {
     toolUseId: string;
     title: string;
     live: boolean;
-    /** El subagente sigue trabajando: la pestaña lleva spinner. */
-    running: boolean;
-    /** Contraído: sólo se ve la pestaña. */
+    /** Contraído: sólo se ve su pestaña. */
     collapsed: boolean;
     onClose: () => void;
     onToast: (m: string) => void;
@@ -23,7 +20,6 @@
     toolUseId,
     title,
     live,
-    running,
     collapsed = $bindable(false),
     onClose,
     onToast,
@@ -121,10 +117,3 @@
     {/if}
   </div>
 </aside>
-{#if collapsed}
-  <button class="av-tab" title="Volver al subagente: {title}" onclick={() => (collapsed = false)}>
-    <span class="av-tab-ic">◂</span>
-    <span class="av-tab-title">{title || 'Subagente'}</span>
-    {#if running}<Spinner size={12} />{/if}
-  </button>
-{/if}

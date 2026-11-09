@@ -246,6 +246,22 @@
     viewer = { id, title };
     viewerCollapsed = false;
   }
+  // Pestañas en el borde derecho: una por subagente que trabaja y la del abierto, aunque haya
+  // terminado. Pulsar una lo despliega. Con un panel desplegado no se pintan: quedarían encima.
+  type AgentTab = { id: string; title: string; running: boolean };
+  const tabs = $derived.by((): AgentTab[] => {
+    const v = viewer;
+    if (v && !viewerCollapsed) return [];
+    const list: AgentTab[] = session.agents
+      .filter((a) => a.toolUseId)
+      .map((a) => ({ id: a.toolUseId, title: a.description || a.agentType, running: true }));
+    if (v && !list.some((t) => t.id === v.id)) list.unshift({ id: v.id, title: v.title, running: false });
+    return list;
+  });
+  function openTab(t: AgentTab) {
+    if (viewer?.id === t.id) viewerCollapsed = false;
+    else showAgent(t.id, t.title);
+  }
   let handledReq = 0;
   $effect(() => {
     const r = openAgent;
@@ -317,11 +333,21 @@
       toolUseId={viewer.id}
       title={viewer.title}
       live={session.status !== 'stopped'}
-      running={session.agents.some((a) => a.toolUseId === viewer?.id)}
       bind:collapsed={viewerCollapsed}
       onClose={() => (viewer = null)}
       {onToast}
       onOpenAgent={showAgent}
     />
+  {/if}
+  {#if tabs.length}
+    <div class="av-tabs">
+      {#each tabs as t (t.id)}
+        <button class="av-tab" title="Ver el subagente: {t.title || 'Subagente'}" onclick={() => openTab(t)}>
+          <span class="av-tab-ic">◂</span>
+          <span class="av-tab-title">{t.title || 'Subagente'}</span>
+          {#if t.running}<Spinner size={12} />{/if}
+        </button>
+      {/each}
+    </div>
   {/if}
 </div>
