@@ -613,11 +613,15 @@ pub(crate) fn read_status(sid: &str) -> Option<Value> {
     serde_json::from_str(&s).ok()
 }
 
-/// Cuotas de la cuenta. Cada sesión guarda el porcentaje de su última llamada a la API,
-/// así que las inactivas tienen datos viejos: por ventana se toma el reset más reciente
-/// y, dentro de él, el mayor porcentaje (el uso sólo crece dentro de una ventana).
-/// Cuotas de la cuenta, recalculadas como mucho cada 5 s: leer y parsear todos los ficheros de
-/// estado en cada vuelta del sondeo (1,2 s) era trabajo de más.
+/// Cuotas de la cuenta (5 h y semanal), de dos fuentes:
+/// - el statusline de cada sesión, con la cuota de su última llamada a la API: la de una sesión
+///   parada o esperando es vieja, aunque con `refreshInterval` se reescriba cada 10 s;
+/// - lo que contesta Claude Code a `get_usage` (`spawn_quota_probe`), pedido cada pocos minutos.
+///   Sin esto, con una sola sesión y sin llamadas que las trajeran, no se movían.
+///
+/// Por ventana se toma el reset más reciente y, dentro de él, el mayor porcentaje (el uso sólo
+/// crece dentro de una ventana). Recalculadas como mucho cada 5 s: leer y parsear todos los
+/// ficheros de estado en cada vuelta del sondeo (1,2 s) era trabajo de más.
 fn account_quota() -> Option<Value> {
     static CACHE: Mutex<Option<(Instant, Option<Value>)>> = Mutex::new(None);
     let mut c = CACHE.lock().unwrap();
@@ -633,8 +637,8 @@ fn account_quota() -> Option<Value> {
 
 fn account_quota_now() -> Option<Value> {
     let cutoff = SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
-    let mut best: HashMap<&'static str, (u64, f64)> = HashMap::new();
-    for e in std::fs::read_dir(paths::status_dir()).ok()?.flatten() {
+    let mut seen = Vec::new();
+    for e in std::fs::read_dir(paths::status_dir()).into_iter().flatten().flatten() {
         let p = e.path();
         if !p.extension().is_some_and(|x| x == "json") {
             continue;
@@ -648,26 +652,148 @@ fn account_quota_now() -> Option<Value> {
         else {
             continue;
         };
-        for w in ["five_hour", "seven_day"] {
-            let r = &v["rate_limits"][w];
-            let (Some(reset), Some(pct)) = (r["resets_at"].as_u64(), r["used_percentage"].as_f64())
-            else {
-                continue;
-            };
-            let cur = best.entry(w).or_insert((0, 0.0));
-            if reset > cur.0 || (reset == cur.0 && pct > cur.1) {
-                *cur = (reset, pct);
-            }
+        quota_readings(&v["rate_limits"], &mut seen);
+    }
+    if let Some(q) = PROBED_QUOTA.lock().unwrap().as_ref() {
+        quota_readings(q, &mut seen);
+    }
+    merge_quota(&seen)
+}
+
+/// Las ventanas de un `rate_limits` con la forma del statusline (`{five_hour: {used_percentage,
+/// resets_at}, …}`), como (ventana, reset en segundos, porcentaje).
+fn quota_readings(rl: &Value, out: &mut Vec<(&'static str, f64, f64)>) {
+    for w in ["five_hour", "seven_day"] {
+        let r = &rl[w];
+        if let (Some(reset), Some(pct)) = (r["resets_at"].as_f64(), r["used_percentage"].as_f64()) {
+            out.push((w, reset, pct));
         }
     }
-    if best.is_empty() {
-        return None;
-    }
+}
+
+/// Por ventana, el reset más reciente y el mayor porcentaje de las lecturas de esa ventana.
+/// Resets a menos de 10 min son la misma ventana: cada fuente redondea el suyo (el de
+/// `get_usage` trae fracciones de segundo), y dos ventanas seguidas distan al menos 5 h.
+fn merge_quota(seen: &[(&'static str, f64, f64)]) -> Option<Value> {
     let mut out = serde_json::Map::new();
-    for (w, (reset, pct)) in best {
-        out.insert(w.into(), json!({ "resets_at": reset, "used_percentage": pct }));
+    for w in ["five_hour", "seven_day"] {
+        let of_w = || seen.iter().filter(move |s| s.0 == w);
+        let Some(reset) = of_w().map(|s| s.1).reduce(f64::max) else {
+            continue;
+        };
+        let pct = of_w().filter(|s| s.1 > reset - 600.0).map(|s| s.2).fold(0.0, f64::max);
+        out.insert(w.into(), json!({ "resets_at": reset.round() as u64, "used_percentage": pct }));
     }
-    Some(Value::Object(out))
+    (!out.is_empty()).then_some(Value::Object(out))
+}
+
+/// La última respuesta de `get_usage`, con la forma del statusline. No caduca: dentro de su
+/// ventana es un mínimo seguro, y pasado el reset la barra ya marca 0.
+static PROBED_QUOTA: Mutex<Option<Value>> = Mutex::new(None);
+
+/// Cada cuánto se piden las cuotas a Claude Code. Cada vez es un proceso de ~1,3 s con un pico de
+/// ~300 MB (buena parte, el binario que ya comparten las sesiones abiertas); entre medias, las
+/// sesiones que trabajan siguen trayendo la cuota de cada llamada.
+const QUOTA_PROBE_EVERY: Duration = Duration::from_secs(300);
+
+/// Pide las cuotas a Claude Code nada más arrancar y luego cada `QUOTA_PROBE_EVERY`.
+pub fn spawn_quota_probe(claude: PathBuf) {
+    std::thread::spawn(move || {
+        let mut last_err = String::new();
+        loop {
+            match probe_quota(&claude) {
+                Ok(q) => {
+                    *PROBED_QUOTA.lock().unwrap() = Some(q);
+                    last_err.clear();
+                }
+                // Cada error distinto, una vez: sin red sería el mismo cada 5 minutos.
+                Err(e) if e != last_err => {
+                    log(&format!("cuotas: {e}"));
+                    last_err = e;
+                }
+                Err(_) => {}
+            }
+            std::thread::sleep(QUOTA_PROBE_EVERY);
+        }
+    });
+}
+
+/// Las cuotas del plan, con la petición de control `get_usage` de Claude Code (lo que enseña
+/// /usage). Va en un proceso de modo print que no llama al modelo: sin hooks, sin servidores
+/// MCP, sin guardar sesión y en la carpeta de la sonda, que la barra lateral no enseña. Con la
+/// entrada cerrada tras la petición, contesta y termina solo; de paso renueva la caché de /usage
+/// de ~/.claude.json, de la que sale el desglose por modelo (`usage_breakdown`).
+fn probe_quota(claude: &Path) -> Result<Value, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    const ID: &str = "ccdesk-usage";
+    let dir = paths::probe_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut cmd = Command::new(claude);
+    cmd.current_dir(&dir)
+        .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
+        .args(["--no-session-persistence", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#])
+        .args(["--settings", r#"{"disableAllHooks":true}"#])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    tmux::clean_env(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("no se ha podido lanzar {}: {e}", claude.display()))?;
+    let req = json!({
+        "type": "control_request",
+        "request_id": ID,
+        "request": { "subtype": "get_usage", "skip_behaviors": true },
+    });
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "{req}");
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if v["type"] == "control_response" && v["response"]["request_id"] == ID {
+                    let _ = tx.send(v["response"].clone());
+                    return;
+                }
+            }
+        });
+    }
+    let resp = rx.recv_timeout(Duration::from_secs(30));
+    // Si ha contestado, termina solo (quizá guardando aún la caché de /usage): se le dan unos
+    // segundos antes de matarlo. Si no, fuera ya.
+    if resp.is_ok() {
+        for _ in 0..50 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let resp = resp.map_err(|_| "Claude Code no ha contestado a get_usage".to_string())?;
+    if resp["subtype"] != "success" {
+        return Err(format!("get_usage: {}", resp["error"].as_str().unwrap_or("error")));
+    }
+    quota_from_usage(&resp["response"]).ok_or_else(|| "get_usage no trae cuotas del plan".into())
+}
+
+/// `rate_limits` de la respuesta de `get_usage` (`{five_hour: {utilization: 0-100, resets_at:
+/// ISO}, …}`) con la forma del statusline: `{five_hour: {used_percentage, resets_at: s}, …}`.
+fn quota_from_usage(u: &Value) -> Option<Value> {
+    let mut out = serde_json::Map::new();
+    for w in ["five_hour", "seven_day"] {
+        let r = &u["rate_limits"][w];
+        let (Some(pct), Some(ms)) = (r["utilization"].as_f64(), r["resets_at"].as_str().and_then(transcript::iso_ms))
+        else {
+            continue;
+        };
+        out.insert(w.into(), json!({ "used_percentage": pct, "resets_at": (ms as f64 / 1000.0).round() as u64 }));
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
 }
 
 fn pick_title(
@@ -2961,6 +3087,51 @@ mod tests {
         assert!(mode_flags("bypassPermissions", false).is_empty());
         assert!(mode_flags("default", true).is_empty());
         assert!(mode_flags("plan --dangerously-skip-permissions", true).is_empty());
+    }
+
+    #[test]
+    fn quota_sources() {
+        use super::{merge_quota, quota_from_usage};
+        use serde_json::json;
+        // Misma ventana con el reset redondeado distinto: el mayor porcentaje. La ventana nueva
+        // gana a la anterior aunque marque menos.
+        let seen = [
+            ("five_hour", 1_794_046_200.0, 31.0),
+            ("five_hour", 1_794_046_200.437, 35.0),
+            ("five_hour", 1_794_009_600.0, 90.0),
+            ("seven_day", 1_794_265_200.0, 80.0),
+            ("seven_day", 1_794_265_199.0, 81.0),
+        ];
+        let q = merge_quota(&seen).unwrap();
+        assert_eq!(q["five_hour"], json!({ "resets_at": 1_794_046_200u64, "used_percentage": 35.0 }));
+        assert_eq!(q["seven_day"], json!({ "resets_at": 1_794_265_200u64, "used_percentage": 81.0 }));
+        assert_eq!(merge_quota(&[]), None);
+        // La respuesta de get_usage (07-11-2026), pasada a la forma del statusline.
+        let u = json!({ "rate_limits": {
+            "five_hour": { "utilization": 35, "resets_at": "2026-11-07T10:10:00.436888+00:00" },
+            "seven_day": { "utilization": 81, "resets_at": "2026-11-09T23:00:00.436908+00:00" },
+            "seven_day_opus": null,
+        }});
+        assert_eq!(
+            quota_from_usage(&u).unwrap(),
+            json!({
+                "five_hour": { "used_percentage": 35.0, "resets_at": 1_794_046_200u64 },
+                "seven_day": { "used_percentage": 81.0, "resets_at": 1_794_265_200u64 },
+            })
+        );
+        // Sin ventana en curso (pasado el reset y sin llamadas) no hay hora de reset: no cuenta.
+        let idle = json!({ "rate_limits": { "five_hour": { "utilization": 0, "resets_at": null } } });
+        assert_eq!(quota_from_usage(&idle), None);
+    }
+
+    /// Contra el Claude Code instalado, con la sesión iniciada de una suscripción:
+    /// `cargo test quota_probe_live -- --ignored`.
+    #[test]
+    #[ignore]
+    fn quota_probe_live() {
+        let q = super::probe_quota(&crate::paths::claude_bin()).unwrap();
+        assert!(q["five_hour"]["used_percentage"].is_number() || q["seven_day"]["used_percentage"].is_number(), "{q}");
+        println!("{q}");
     }
 
     /// CCDESK_TEST_CLIP=1 cargo test --release clip_real -- --nocapture (lee el portapapeles)

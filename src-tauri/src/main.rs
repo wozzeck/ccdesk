@@ -98,6 +98,8 @@ fn main() {
                 single::serve(listener, move |id| single::bring_to_front(&handle, id));
             }
             app::spawn_poller(app.handle().clone(), poller_core.clone());
+            // Cuotas de la cuenta pedidas a Claude Code cada pocos minutos (la barra de abajo).
+            app::spawn_quota_probe(poller_core.claude.clone());
             // Índice de búsqueda en las conversaciones (hilo propio, al día cada 10 s) y precarga
             // de los comandos de Claude Code, en segundo plano y ya con la lista hecha.
             search::spawn_indexer(poller_core.clone());
