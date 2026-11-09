@@ -104,6 +104,15 @@ export interface RateWindow {
   resets_at?: number;
 }
 
+/** Cambio de modelo o effort pedido con la sesión ocupada: se aplica en cuanto queda inactiva. */
+export interface PendingChange {
+  model?: { n: number; label: string };
+  effort?: string;
+}
+
+/** Elegido con la sesión inactiva, encolado, o anulado lo encolado (se eligió el que ya tiene). */
+export type ChangeResult = 'applied' | 'queued' | 'cancelled';
+
 export interface Snapshot {
   sessions: SessionView[];
   activeStatus: any | null;
@@ -122,6 +131,8 @@ export interface Snapshot {
   /** Sesiones con algo sin leer (guardadas: sobreviven a cerrar la app). */
   unread: string[];
   quota: { five_hour?: RateWindow; seven_day?: RateWindow } | null;
+  /** Cambios de modelo y effort encolados, por sesión. */
+  pending: Record<string, PendingChange>;
   settings: Settings;
   recentCwds: string[];
   home: string;
@@ -252,8 +263,8 @@ export const api = {
     invoke<{ levels: string[]; current: string }>('session_efforts', { key }),
   sessionModes: (key: string) => invoke<string[]>('session_modes', { key }),
   usageRefresh: (key: string) => invoke<void>('usage_refresh', { key }),
-  setModel: (key: string, n: number, label: string) => invoke<void>('session_set_model', { key, n, label }),
-  setEffort: (key: string, effort: string) => invoke<void>('session_set_effort', { key, effort }),
+  setModel: (key: string, n: number, label: string) => invoke<ChangeResult>('session_set_model', { key, n, label }),
+  setEffort: (key: string, effort: string) => invoke<ChangeResult>('session_set_effort', { key, effort }),
   setMode: (key: string, mode: string) => invoke<string>('session_set_mode', { key, mode }),
   sessionRestart: (key: string, mode?: string) => invoke<void>('session_restart', { key, mode }),
   termOpen: (key: string, cols: number, rows: number, onData: Channel<string>, gen: number) =>

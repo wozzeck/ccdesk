@@ -50,6 +50,25 @@ pub struct Core {
     pub typed: Mutex<HashMap<String, u64>>,
     /// Lectura del transcript de cada sesión (por sid) para `last_reply`.
     pub replies: Mutex<HashMap<String, ReplyTail>>,
+    /// Cambios de modelo y effort encolados por sesión: se aplican en cuanto queda inactiva.
+    pub pending: Mutex<HashMap<String, Pending>>,
+}
+
+/// Cambio de modelo o de effort pedido con la sesión ocupada (trabajando, pidiendo permiso,
+/// arrancando…), a la espera de que quede inactiva (`apply_pending`).
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+pub struct Pending {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<PendingModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// El modelo, como lo busca `session_set_model`: posición en la lista leída y etiqueta.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct PendingModel {
+    pub n: u32,
+    pub label: String,
 }
 
 #[derive(Default)]
@@ -146,6 +165,8 @@ pub struct Snapshot {
     /// Sesiones con algo sin leer (guardadas: sobreviven a cerrar la app).
     pub unread: Vec<String>,
     pub quota: Option<Value>,
+    /// Cambios de modelo y effort encolados, por sesión.
+    pub pending: HashMap<String, Pending>,
     pub settings: Settings,
     pub recent_cwds: Vec<String>,
     pub home: String,
@@ -1144,6 +1165,12 @@ pub fn build(core: &Core) -> Snapshot {
         }
         None => (None, None),
     };
+    let pending = {
+        let mut pd = core.pending.lock().unwrap();
+        // Lo de sesiones que ya no están (borradas u olvidadas) sobra.
+        pd.retain(|k, p| *p != Pending::default() && sessions.iter().any(|s| s.key == *k));
+        pd.clone()
+    };
     let snap = Snapshot {
         sessions,
         active_status,
@@ -1154,6 +1181,7 @@ pub fn build(core: &Core) -> Snapshot {
         last_active_sid,
         unread,
         quota: account_quota(),
+        pending,
         settings,
         recent_cwds,
         home: paths::home().to_string_lossy().into_owned(),
@@ -2324,15 +2352,220 @@ pub async fn session_models(core: State<'_, Shared>, key: String) -> Result<Vec<
     tauri::async_runtime::spawn_blocking(move || models_now(&core)).await.map_err(|e| e.to_string())?
 }
 
-/// Cambia el modelo sólo para esta sesión: cursor a su fila del selector y «s». Se busca por la
+/// Cambia el modelo sólo para esta sesión (`set_model_in`). Con la sesión ocupada se encola y se
+/// aplica en cuanto queda inactiva. Devuelve «applied», «queued» o «cancelled» (`merge_pending`).
+#[tauri::command]
+pub async fn session_set_model(core: State<'_, Shared>, key: String, n: u32, label: Option<String>) -> Result<String, String> {
+    queue_change(&core, &key, Some(PendingModel { n, label: label.unwrap_or_default() }), None)
+}
+
+/// Cambia el effort sólo para esta sesión (`set_effort_in`) o lo encola, como el modelo.
+#[tauri::command]
+pub async fn session_set_effort(core: State<'_, Shared>, key: String, effort: String) -> Result<String, String> {
+    queue_change(&core, &key, None, Some(effort))
+}
+
+/// Encola el cambio y, con la sesión inactiva, lo aplica ya, junto con lo que hubiera encolado.
+fn queue_change(core: &Core, key: &str, model: Option<PendingModel>, effort: Option<String>) -> Result<String, String> {
+    let v = find_view(core, key).ok_or("Sesión desconocida")?;
+    if !v.managed {
+        return Err("Sesión externa: adóptala para cambiarlo".into());
+    }
+    if v.status == "stopped" {
+        return Err("La sesión está detenida".into());
+    }
+    let st = read_status(&v.sid).unwrap_or(Value::Null);
+    let (cur_model, cur_effort) = (
+        st["model"]["display_name"].as_str().unwrap_or(""),
+        st["effort"]["level"].as_str().unwrap_or(""),
+    );
+    let cancelled = {
+        let mut pd = core.pending.lock().unwrap();
+        merge_pending(pd.entry(key.to_string()).or_default(), model, effort, cur_model, cur_effort)
+    };
+    if cancelled {
+        return Ok("cancelled".into());
+    }
+    if v.status != "idle" {
+        return Ok("queued".into());
+    }
+    let r = apply_pending(core, key, false);
+    match r.error {
+        Some(e) => Err(e),
+        None => Ok(if r.later { "queued" } else { "applied" }.into()),
+    }
+}
+
+/// Junta un cambio con lo encolado de la sesión. Elegir lo que ya tiene, con algo de eso
+/// encolado, lo anula (devuelve true). Sin nada encolado se pide igual: el statusline puede ir
+/// unos segundos por detrás de un cambio recién hecho.
+fn merge_pending(
+    p: &mut Pending,
+    model: Option<PendingModel>,
+    effort: Option<String>,
+    cur_model: &str,
+    cur_effort: &str,
+) -> bool {
+    let mut cancelled = false;
+    if let Some(m) = model {
+        if p.model.is_some() && !m.label.is_empty() && m.label == cur_model {
+            p.model = None;
+            cancelled = true;
+        } else {
+            p.model = Some(m);
+        }
+    }
+    if let Some(e) = effort {
+        if p.effort.is_some() && e == cur_effort {
+            p.effort = None;
+            cancelled = true;
+        } else {
+            p.effort = Some(e);
+        }
+    }
+    cancelled
+}
+
+/// Lo que ha hecho `apply_pending`.
+#[derive(Default)]
+struct Applied {
+    /// Lo aplicado.
+    done: Pending,
+    /// Por qué no se ha podido aplicar algo (ya fuera de la cola), y qué: «model» o «effort».
+    error: Option<String>,
+    failed: Option<&'static str>,
+    /// No era el momento: sigue encolado.
+    later: bool,
+}
+
+/// Aplica lo encolado de la sesión: el modelo y después el effort, cuyos niveles dependen del
+/// modelo. Lo aplicado o fallido sale de la cola, salvo que entretanto se haya pedido otra cosa.
+/// Con `auto` (desde el sondeo, sin que nadie lo pida en ese momento), sólo con la caja de Claude
+/// Code a la vista y vacía: si no, el selector se abriría sobre un diálogo o se borraría lo que
+/// alguien esté escribiendo en la terminal.
+fn apply_pending(core: &Core, key: &str, auto: bool) -> Applied {
+    let mut r = Applied::default();
+    let _turn = core.typing.lock().unwrap();
+    let Some(p) = core.pending.lock().unwrap().get(key).cloned() else {
+        return r;
+    };
+    // La lista del sondeo puede ser de hace 1,2 s: el estado se mira en el registro.
+    let host = host_of(core, key).filter(|_| idle_now(core, key));
+    let Some(h) = host.filter(|h| !auto || box_empty(&core.tmux, h)) else {
+        r.later = true;
+        return r;
+    };
+    note_typing(core, key);
+    if let Some(m) = &p.model {
+        let res = set_model_in(core, &h, m.n, &m.label);
+        unqueue(core, key, |q| {
+            if q.model.as_ref() == Some(m) {
+                q.model = None;
+            }
+        });
+        match res {
+            Ok(()) => r.done.model = Some(m.clone()),
+            Err(e) => {
+                r.error = Some(format!("No se ha podido cambiar el modelo a {}: {e}", m.label));
+                r.failed = Some("model");
+                return r;
+            }
+        }
+    }
+    if let Some(e) = &p.effort {
+        let res = set_effort_in(core, &h, e);
+        unqueue(core, key, |q| {
+            if q.effort.as_ref() == Some(e) {
+                q.effort = None;
+            }
+        });
+        match res {
+            Ok(()) => r.done.effort = Some(e.clone()),
+            Err(err) => {
+                r.error = Some(format!("No se ha podido cambiar el effort a {e}: {err}"));
+                r.failed = Some("effort");
+            }
+        }
+    }
+    r
+}
+
+fn unqueue(core: &Core, key: &str, f: impl FnOnce(&mut Pending)) {
+    let mut pd = core.pending.lock().unwrap();
+    if let Some(q) = pd.get_mut(key) {
+        f(q);
+        if *q == Pending::default() {
+            pd.remove(key);
+        }
+    }
+}
+
+/// Si la sesión está inactiva ahora mismo según el registro de Claude Code («shell» cuenta, como
+/// en `reg_status`).
+fn idle_now(core: &Core, key: &str) -> bool {
+    let Some(pid) = find_view(core, key).filter(|v| v.managed).and_then(|v| v.pid) else {
+        return false;
+    };
+    registry::read_all().iter().any(|r| r.pid == pid && reg_status(r) == "idle")
+}
+
+/// La caja de texto de Claude Code a la vista y sin nada escrito (la sugerencia, atenuada, no
+/// cuenta).
+fn box_empty(t: &Tmux, h: &Host) -> bool {
+    t.capture_ansi(h).as_deref().and_then(typed_rows).is_some_and(|(rows, _)| rows.is_empty())
+}
+
+/// Aplica lo encolado de las sesiones que llevan más de un segundo inactivas sin que ccdesk haya
+/// tecleado en ellas (entre un turno y el mensaje que tenía en cola, una sesión pasa un instante
+/// por inactiva). Va en un hilo aparte: el selector tarda segundos y el sondeo no espera.
+fn pending_tick(app: &AppHandle, core: &Shared, snap: &Snapshot, idle_since: &mut HashMap<String, (Instant, u64)>) {
+    static APPLYING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    idle_since.retain(|k, _| snap.pending.contains_key(k));
+    for key in snap.pending.keys() {
+        if !snap.sessions.iter().any(|s| s.key == *key && s.managed && s.status == "idle") {
+            idle_since.remove(key);
+            continue;
+        }
+        let typed = core.typed.lock().unwrap().get(key).copied().unwrap_or(0);
+        match idle_since.get(key) {
+            Some(&(t, n)) if n == typed && t.elapsed() >= Duration::from_secs(1) => {}
+            Some(&(_, n)) if n == typed => continue,
+            _ => {
+                idle_since.insert(key.clone(), (Instant::now(), typed));
+                continue;
+            }
+        }
+        {
+            let mut a = APPLYING.lock().unwrap();
+            if a.contains(key) {
+                continue;
+            }
+            a.push(key.clone());
+        }
+        idle_since.remove(key);
+        let (app, core, key) = (app.clone(), core.clone(), key.clone());
+        std::thread::spawn(move || {
+            let r = apply_pending(&core, &key, true);
+            APPLYING.lock().unwrap().retain(|k| *k != key);
+            if r.done != Pending::default() {
+                let _ = app.emit("pending-applied", json!({ "key": key, "model": r.done.model, "effort": r.done.effort }));
+            }
+            if let Some(e) = r.error {
+                log(&format!("{key}: {e}"));
+                // La interfaz deja de enseñar lo que no se ha aplicado.
+                let _ = app.emit("pending-failed", json!({ "key": key, "kind": r.failed }));
+                let _ = app.emit("toast", e);
+            }
+        });
+    }
+}
+
+/// Cambia el modelo de la sesión: cursor a su fila del selector `/model` y «s». Se busca por la
 /// etiqueta: una sesión que siga con una versión anterior de Claude Code puede tener otra lista.
 /// `n` (su posición en la lista leída) da el sentido más corto.
-#[tauri::command]
-pub async fn session_set_model(core: State<'_, Shared>, key: String, n: u32, label: Option<String>) -> Result<(), String> {
-    let h = idle_host(&core, &key)?;
+fn set_model_in(core: &Core, h: &Host, n: u32, label: &str) -> Result<(), String> {
     let t = &core.tmux;
-    let mut sc = open_picker(t, &h, "/model", "Select model")?;
-    let label = label.unwrap_or_default();
+    let mut sc = open_picker(t, h, "/model", "Select model")?;
     let known = core.opts.lock().unwrap().models.as_ref().map_or(0, |(_, m)| m.len());
     let total = known.max(picker_rows(&sc).0.len()).max(1) as i64;
     let (mut dir, mut prev): (Option<&str>, Option<u32>) = (None, None);
@@ -2345,10 +2578,10 @@ pub async fn session_set_model(core: State<'_, Shared>, key: String, n: u32, lab
             rows.iter().any(|r| r.n == c && r.label == label)
         };
         if hit {
-            t.send_keys(&h, &["s"])?;
+            t.send_keys(h, &["s"])?;
             std::thread::sleep(Duration::from_millis(400));
-            if t.capture(&h).is_some_and(|x| x.contains("Select model")) {
-                let _ = t.send_keys(&h, &["Escape"]);
+            if t.capture(h).is_some_and(|x| x.contains("Select model")) {
+                let _ = t.send_keys(h, &["Escape"]);
                 return Err("El selector no aceptó el cambio".into());
             }
             return Ok(());
@@ -2363,9 +2596,9 @@ pub async fn session_set_model(core: State<'_, Shared>, key: String, n: u32, lab
             dir = Some(if d == "Down" { "Up" } else { "Down" });
         }
         prev = Some(c);
-        sc = step_and_capture(t, &h, dir.unwrap_or("Down"));
+        sc = step_and_capture(t, h, dir.unwrap_or("Down"));
     }
-    let _ = t.send_keys(&h, &["Escape"]);
+    let _ = t.send_keys(h, &["Escape"]);
     Err("No encuentro ese modelo en el selector".into())
 }
 
@@ -2375,14 +2608,26 @@ pub struct EffortOpts {
     current: String,
 }
 
-/// Niveles de effort que ofrece Claude Code para el modelo de la sesión.
+/// Los niveles que acepta `claude --effort`: los que se ofrecen cuando no se pueden leer los del
+/// modelo. Si el modelo no admite el elegido, se avisa al aplicarlo.
+const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Niveles de effort que ofrece Claude Code para el modelo de la sesión. Si no están leídos y la
+/// sesión no está inactiva (no se puede abrir su `/effort`), o va a cambiar de modelo, los de
+/// `EFFORT_LEVELS`.
 #[tauri::command]
 pub async fn session_efforts(core: State<'_, Shared>, key: String) -> Result<EffortOpts, String> {
     let v = find_view(&core, &key).ok_or("Sesión desconocida")?;
     let model = read_status(&v.sid).and_then(|s| s["model"]["id"].as_str().map(String::from)).unwrap_or_default();
     let cur = read_status(&v.sid).and_then(|s| s["effort"]["level"].as_str().map(String::from)).unwrap_or_default();
-    if let Some(l) = core.opts.lock().unwrap().efforts.get(&model) {
-        return Ok(EffortOpts { levels: l.clone(), current: cur });
+    let new_model = core.pending.lock().unwrap().get(&key).is_some_and(|p| p.model.is_some());
+    if !new_model {
+        if let Some(l) = core.opts.lock().unwrap().efforts.get(&model) {
+            return Ok(EffortOpts { levels: l.clone(), current: cur });
+        }
+    }
+    if new_model || v.status != "idle" {
+        return Ok(EffortOpts { levels: EFFORT_LEVELS.map(String::from).to_vec(), current: cur });
     }
     let h = idle_host(&core, &key)?;
     let sc = open_picker(&core.tmux, &h, "/effort", "Effort")?;
@@ -2393,29 +2638,27 @@ pub async fn session_efforts(core: State<'_, Shared>, key: String) -> Result<Eff
     Ok(EffortOpts { levels, current })
 }
 
-/// Cambia el effort sólo para esta sesión: deslizador de `/effort` hasta el nivel y «s».
-#[tauri::command]
-pub async fn session_set_effort(core: State<'_, Shared>, key: String, effort: String) -> Result<(), String> {
-    let h = idle_host(&core, &key)?;
-    let mut sc = open_picker(&core.tmux, &h, "/effort", "Effort")?;
+/// Cambia el effort de la sesión: deslizador de `/effort` hasta el nivel y «s».
+fn set_effort_in(core: &Core, h: &Host, effort: &str) -> Result<(), String> {
+    let mut sc = open_picker(&core.tmux, h, "/effort", "Effort")?;
     for _ in 0..12 {
         let Some((levels, cur)) = effort_slider(&sc) else { break };
         let Some(target) = levels.iter().position(|l| *l == effort) else {
-            let _ = core.tmux.send_keys(&h, &["Escape"]);
+            let _ = core.tmux.send_keys(h, &["Escape"]);
             return Err(format!("Claude no ofrece el effort «{effort}» para este modelo"));
         };
         if cur == target {
-            core.tmux.send_keys(&h, &["s"])?;
+            core.tmux.send_keys(h, &["s"])?;
             std::thread::sleep(Duration::from_millis(400));
-            if core.tmux.capture(&h).is_some_and(|x| x.contains("Esc to cancel")) {
-                let _ = core.tmux.send_keys(&h, &["Escape"]);
+            if core.tmux.capture(h).is_some_and(|x| x.contains("Esc to cancel")) {
+                let _ = core.tmux.send_keys(h, &["Escape"]);
                 return Err("El selector no aceptó el cambio".into());
             }
             return Ok(());
         }
-        sc = step_and_capture(&core.tmux, &h, if target > cur { "Right" } else { "Left" });
+        sc = step_and_capture(&core.tmux, h, if target > cur { "Right" } else { "Left" });
     }
-    let _ = core.tmux.send_keys(&h, &["Escape"]);
+    let _ = core.tmux.send_keys(h, &["Escape"]);
     Err("No he podido mover el deslizador de effort".into())
 }
 
@@ -2986,12 +3229,14 @@ pub fn spawn_poller(app: AppHandle, core: Shared) {
     std::thread::spawn(move || {
         let mut tick: u64 = 0;
         let mut notifier = crate::notify::Notifier::default();
+        let mut idle_since = HashMap::new();
         loop {
             poll_transcript(&app, &core, tick);
             if tick.is_multiple_of(3) {
                 let snap = build(&core);
                 notifier.observe(&app, &core, &snap);
                 reattach_opened(&core, &snap);
+                pending_tick(&app, &core, &snap, &mut idle_since);
                 if let Ok(s) = serde_json::to_string(&snap) {
                     let mut last = core.last_snap.lock().unwrap();
                     if *last != s {
@@ -3122,6 +3367,26 @@ mod tests {
         // Sin ventana en curso (pasado el reset y sin llamadas) no hay hora de reset: no cuenta.
         let idle = json!({ "rate_limits": { "five_hour": { "utilization": 0, "resets_at": null } } });
         assert_eq!(quota_from_usage(&idle), None);
+    }
+
+    #[test]
+    fn pending_changes() {
+        use super::{merge_pending, Pending, PendingModel};
+        let m = |n: u32, l: &str| Some(PendingModel { n, label: l.into() });
+        let mut p = Pending::default();
+        // Con la sesión en Opus: se encola Sonnet y luego otro effort; lo nuevo sustituye a lo encolado.
+        assert!(!merge_pending(&mut p, m(4, "Sonnet 5.5"), None, "Opus 5.5", "xhigh"));
+        assert!(!merge_pending(&mut p, None, Some("high".into()), "Opus 5.5", "xhigh"));
+        assert!(!merge_pending(&mut p, None, Some("max".into()), "Opus 5.5", "xhigh"));
+        assert_eq!(p, Pending { model: m(4, "Sonnet 5.5"), effort: Some("max".into()) });
+        // Elegir el que ya tiene anula lo encolado de eso, y sólo de eso.
+        assert!(merge_pending(&mut p, m(2, "Opus 5.5"), None, "Opus 5.5", "xhigh"));
+        assert_eq!(p, Pending { model: None, effort: Some("max".into()) });
+        assert!(merge_pending(&mut p, None, Some("xhigh".into()), "Opus 5.5", "xhigh"));
+        assert_eq!(p, Pending::default());
+        // Sin nada encolado, el que ya tiene se pide igual (el statusline puede ir con retraso).
+        assert!(!merge_pending(&mut p, m(2, "Opus 5.5"), None, "Opus 5.5", "xhigh"));
+        assert_eq!(p.model, m(2, "Opus 5.5"));
     }
 
     /// Contra el Claude Code instalado, con la sesión iniciada de una suscripción:

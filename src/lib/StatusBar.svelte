@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { api, errText, type RateWindow, type SessionView, type Snapshot } from './api';
+  import { onMount } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import { api, errText, type ChangeResult, type PendingChange, type RateWindow, type SessionView, type Snapshot } from './api';
   import Dropdown from './Dropdown.svelte';
   import { MODE_NAMES } from './modes';
 
@@ -8,13 +10,15 @@
     quota: Snapshot['quota'];
     usage: Snapshot['usage'];
     session: SessionView | null;
+    /** Cambio de modelo o effort de esta sesión encolado hasta que quede inactiva. */
+    queued?: PendingChange;
     mode: string | null;
     allowYolo: boolean;
     now: number;
     onToast: (m: string) => void;
     ask: (msg: string, ok?: string) => Promise<boolean>;
   }
-  let { status, quota, usage, session, mode, allowYolo, now, onToast, ask }: Props = $props();
+  let { status, quota, usage, session, queued, mode, allowYolo, now, onToast, ask }: Props = $props();
 
   const TZ = 'Europe/Madrid';
   // MODE_NAMES sólo da los nombres; las opciones son las que ofrece la sesión.
@@ -44,16 +48,23 @@
   const fast = $derived(!!status?.fast_mode);
   const rl = $derived(quota ?? status?.rate_limits ?? null);
 
-  // Lo elegido se enseña ya, hasta que el statusline (refresco cada ~10 s) lo confirme.
+  // Lo elegido se enseña ya, hasta que el statusline (refresco cada ~10 s) lo confirme. Lo
+  // encolado (`queued`, sesión ocupada) va por delante hasta que se aplica.
   let pending = $state<{ key: string; model?: string; effort?: string; mode?: string; until: number } | null>(null);
   const live = $derived(pending && session && pending.key === session.key && pending.until > now ? pending : null);
-  const shownModel = $derived(live?.model ?? modelCurrent);
-  const shownEffort = $derived(live?.effort ?? effort ?? '');
+  const shownModel = $derived(queued?.model ? String(queued.model.n) : (live?.model ?? modelCurrent));
+  const modelLabel = $derived(
+    queued?.model?.label ??
+      (live?.model ? (models.find((m) => String(m.n) === live.model)?.label ?? modelName) : modelName),
+  );
+  const shownEffort = $derived(queued?.effort ?? live?.effort ?? effort ?? '');
   const shownMode = $derived(live?.mode ?? mode ?? '');
 
   const running = $derived(!!session && session.managed && session.status !== 'stopped');
-  const canChange = $derived(running && session!.status === 'idle');
   const canMode = $derived(running && ['idle', 'busy'].includes(session!.status));
+  // El modelo y el effort se pueden elegir con la sesión ocupada: se encolan y se aplican en cuanto
+  // queda inactiva.
+  const busy = $derived(running && session!.status !== 'idle');
   const why = $derived(
     !session
       ? ''
@@ -64,6 +75,25 @@
           : session.status !== 'idle'
             ? 'Espera a que Claude termine'
             : '',
+  );
+  const LATER = 'se aplicará en cuanto la sesión quede inactiva';
+  const modelTitle = $derived(
+    !running
+      ? why
+      : queued?.model
+        ? `Pendiente de aplicar: ${queued.model.label}; ${LATER}. Elige ${modelName || 'el actual'} para anularlo.`
+        : busy
+          ? `Modelo de esta sesión. Claude está ocupado: lo que elijas ${LATER}.`
+          : 'Modelo de esta sesión',
+  );
+  const effortTitle = $derived(
+    !running
+      ? why
+      : queued?.effort
+        ? `Pendiente de aplicar: effort ${queued.effort}; ${LATER}. Elige ${effort || 'el actual'} para anularlo.`
+        : busy
+          ? `Effort de esta sesión. Claude está ocupado: lo que elijas ${LATER}.`
+          : 'Effort de esta sesión',
   );
   // YOLO aparece si la preferencia lo permite, aunque la sesión no lo tenga en su ciclo
   // (al elegirlo se ofrece reiniciarla con él); sin la preferencia, se quita.
@@ -92,10 +122,10 @@
     pending = { ...(pending?.key === key ? pending : {}), key, [kind]: value, until: Date.now() + 15000 };
     try {
       if (kind === 'model') {
-        await api.setModel(key, Number(value), models.find((m) => String(m.n) === value)?.label ?? '');
+        settled(key, kind, await api.setModel(key, Number(value), models.find((m) => String(m.n) === value)?.label ?? ''));
         efforts = []; // los niveles de effort dependen del modelo
       }
-      else if (kind === 'effort') await api.setEffort(key, value);
+      else if (kind === 'effort') settled(key, kind, await api.setEffort(key, value));
       else await api.setMode(key, value);
     } catch (e) {
       pending = null;
@@ -103,6 +133,38 @@
       else onToast(errText(e));
     }
   }
+
+  function settled(key: string, kind: 'model' | 'effort', r: ChangeResult) {
+    // Anulado lo encolado: vuelve a verse lo que tiene la sesión.
+    if (r === 'cancelled' && pending?.key === key) pending = { ...pending, [kind]: undefined };
+    else if (r === 'queued') onToast(`Claude está ocupado: el ${kind === 'model' ? 'modelo' : 'effort'} ${LATER}`);
+  }
+
+  // Lo encolado que se aplica después, cuando la sesión queda inactiva: se sigue viendo hasta que
+  // el statusline lo confirme, como lo elegido con la sesión inactiva.
+  onMount(() => {
+    const un = listen<{ key: string } & PendingChange>('pending-applied', (e) => {
+      const p = e.payload;
+      if (p.model) efforts = [];
+      if (session?.key !== p.key) return;
+      pending = {
+        ...(pending?.key === p.key ? pending : {}),
+        key: p.key,
+        ...(p.model ? { model: String(p.model.n) } : {}),
+        ...(p.effort ? { effort: p.effort } : {}),
+        until: Date.now() + 15000,
+      };
+    });
+    // Lo encolado que no se ha podido aplicar: vuelve a verse lo que tiene la sesión.
+    const unFailed = listen<{ key: string; kind: 'model' | 'effort' }>('pending-failed', (e) => {
+      const p = e.payload;
+      if (pending?.key === p.key) pending = { ...pending, [p.kind]: undefined };
+    });
+    return () => {
+      un.then((f) => f());
+      unFailed.then((f) => f());
+    };
+  });
 
   // El bypass sólo se puede activar si la sesión arrancó con --allow-dangerously-skip-permissions:
   // se ofrece reiniciarla (misma conversación) ya en modo YOLO.
@@ -197,19 +259,20 @@
 <div class="statusbar">
   {#if session && status}
     <Dropdown
-      cls="strong"
-      title={why || 'Modelo de esta sesión'}
-      disabled={!canChange}
+      cls={queued?.model ? 'strong pending' : 'strong'}
+      title={modelTitle}
+      disabled={!running}
       value={shownModel}
-      label={live?.model ? (models.find((m) => String(m.n) === live.model)?.label ?? modelName) : modelName}
+      label={modelLabel}
       options={models.map((m) => ({ v: String(m.n), l: m.label }))}
       onOpen={() => load('model')}
       onChange={(v) => change('model', v)}
     />
     {#if fast}<span class="seg">⚡</span>{/if}
     <Dropdown
-      title={why || 'Effort de esta sesión'}
-      disabled={!canChange}
+      cls={queued?.effort ? 'pending' : ''}
+      title={effortTitle}
+      disabled={!running}
       value={shownEffort}
       label={shownEffort}
       options={efforts.map((e) => ({ v: e, l: e }))}

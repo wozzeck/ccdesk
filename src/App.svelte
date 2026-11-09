@@ -503,6 +503,9 @@
     const unFocus = listen<string>('focus-session', (e) => {
       if (snap?.sessions.some((x) => x.key === e.payload)) select(e.payload);
     });
+    // Avisos de lo que hace el backend por su cuenta (p. ej. un cambio de modelo encolado que no
+    // se ha podido aplicar).
+    const unToast = listen<string>('toast', (e) => toast(e.payload));
     api
       .snapshot()
       .then((s) => {
@@ -541,6 +544,7 @@
       alive = false;
       un.then((f) => f());
       unFocus.then((f) => f());
+      unToast.then((f) => f());
       clearInterval(timer);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('wheel', onWheel, true);
@@ -673,6 +677,7 @@
       quota={snap?.quota ?? null}
       usage={snap?.usage ?? null}
       session={active}
+      queued={active ? snap?.pending?.[active.key] : undefined}
       mode={snap?.activeMode ?? null}
       allowYolo={snap?.settings.allowYolo ?? true}
       {now}

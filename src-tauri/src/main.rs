@@ -73,6 +73,7 @@ fn main() {
         typing: Mutex::new(()),
         typed: Mutex::new(std::collections::HashMap::new()),
         replies: Mutex::new(std::collections::HashMap::new()),
+        pending: Mutex::new(std::collections::HashMap::new()),
     });
     let poller_core = core.clone();
 

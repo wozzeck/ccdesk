@@ -2244,6 +2244,16 @@ details.agent-sec .msg {
   color: var(--bad);
   font-weight: 600;
 }
+/* cambio encolado con la sesión ocupada: se aplica en cuanto queda inactiva */
+.dd-btn.pending {
+  font-style: italic;
+  color: var(--muted);
+}
+.dd-btn.pending::before {
+  content: '⏳';
+  font-style: normal;
+  font-size: 10px;
+}
 .dd-caret {
   font-size: 9px;
   color: var(--muted);
