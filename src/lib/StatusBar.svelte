@@ -219,16 +219,13 @@
     return `hace ${Math.round(m / 60)} h`;
   }
   let refreshing = $state(false);
+  // Se piden a Claude Code aparte: no hace falta ninguna sesión, ni que esté inactiva.
   async function refreshUsage() {
-    if (!session || refreshing) return;
-    if (!session.managed || session.status !== 'idle') {
-      onToast('Para actualizar las cuotas por modelo, abre una sesión inactiva (se lee de /usage)');
-      return;
-    }
+    if (refreshing) return;
     refreshing = true;
     try {
-      await api.usageRefresh(session.key);
-      onToast('Cuotas actualizadas desde /usage');
+      await api.usageRefresh();
+      onToast('Cuotas actualizadas');
     } catch (e) {
       onToast(errText(e));
     } finally {

@@ -644,8 +644,7 @@ pub(crate) fn read_status(sid: &str) -> Option<Value> {
 /// crece dentro de una ventana). Recalculadas como mucho cada 5 s: leer y parsear todos los
 /// ficheros de estado en cada vuelta del sondeo (1,2 s) era trabajo de más.
 fn account_quota() -> Option<Value> {
-    static CACHE: Mutex<Option<(Instant, Option<Value>)>> = Mutex::new(None);
-    let mut c = CACHE.lock().unwrap();
+    let mut c = QUOTA_CACHE.lock().unwrap();
     if let Some((t, v)) = c.as_ref() {
         if t.elapsed() < Duration::from_secs(5) {
             return v.clone();
@@ -712,21 +711,32 @@ fn merge_quota(seen: &[(&'static str, f64, f64)]) -> Option<Value> {
 /// ventana es un mínimo seguro, y pasado el reset la barra ya marca 0.
 static PROBED_QUOTA: Mutex<Option<Value>> = Mutex::new(None);
 
+/// `account_quota` de hace menos de 5 s.
+static QUOTA_CACHE: Mutex<Option<(Instant, Option<Value>)>> = Mutex::new(None);
+
 /// Cada cuánto se piden las cuotas a Claude Code. Cada vez es un proceso de ~1,3 s con un pico de
 /// ~300 MB (buena parte, el binario que ya comparten las sesiones abiertas); entre medias, las
 /// sesiones que trabajan siguen trayendo la cuota de cada llamada.
 const QUOTA_PROBE_EVERY: Duration = Duration::from_secs(300);
+
+/// Pide las cuotas a Claude Code y las deja a la vista en la siguiente instantánea. De una en una
+/// (el sondeo periódico y el clic en la barra pueden coincidir).
+fn refresh_quota(claude: &Path) -> Result<(), String> {
+    static RUNNING: Mutex<()> = Mutex::new(());
+    let _one = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let q = probe_quota(claude)?;
+    *PROBED_QUOTA.lock().unwrap() = Some(q);
+    *QUOTA_CACHE.lock().unwrap() = None;
+    Ok(())
+}
 
 /// Pide las cuotas a Claude Code nada más arrancar y luego cada `QUOTA_PROBE_EVERY`.
 pub fn spawn_quota_probe(claude: PathBuf) {
     std::thread::spawn(move || {
         let mut last_err = String::new();
         loop {
-            match probe_quota(&claude) {
-                Ok(q) => {
-                    *PROBED_QUOTA.lock().unwrap() = Some(q);
-                    last_err.clear();
-                }
+            match refresh_quota(&claude) {
+                Ok(()) => last_err.clear(),
                 // Cada error distinto, una vez: sin red sería el mismo cada 5 minutos.
                 Err(e) if e != last_err => {
                     log(&format!("cuotas: {e}"));
@@ -2662,37 +2672,13 @@ fn set_effort_in(core: &Core, h: &Host, effort: &str) -> Result<(), String> {
     Err("No he podido mover el deslizador de effort".into())
 }
 
-/// Refresca el desglose de cuotas abriendo `/usage` en la sesión (inactiva) y cerrándolo en
-/// cuanto Claude Code actualiza su caché.
+/// Refresca las cuotas ya (clic en la barra): lo mismo que el sondeo periódico, que no necesita
+/// ninguna sesión inactiva. Renueva también la caché de /usage, de la que sale el desglose por
+/// modelo.
 #[tauri::command]
-pub async fn usage_refresh(core: State<'_, Shared>, key: String) -> Result<(), String> {
-    let h = idle_host(&core, &key)?;
-    let read = || {
-        std::fs::read_to_string(paths::home().join(".claude.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|j| j["cachedUsageUtilization"]["fetchedAtMs"].as_u64())
-    };
-    let before = read();
-    clear_for_command(&core.tmux, &h)?;
-    core.tmux.send_literal(&h, "/usage")?;
-    std::thread::sleep(Duration::from_millis(250));
-    core.tmux.send_keys(&h, &["Enter"])?;
-    // Un único Escape al final (dos seguidos abrirían el menú de rebobinar de Claude Code).
-    let mut updated = false;
-    for _ in 0..30 {
-        std::thread::sleep(Duration::from_millis(200));
-        if read() != before {
-            updated = true;
-            break;
-        }
-    }
-    std::thread::sleep(Duration::from_millis(300));
-    let panel_open = core.tmux.capture(&h).is_some_and(|sc| sc.contains("Current session") || sc.contains("Current week"));
-    if panel_open {
-        let _ = core.tmux.send_keys(&h, &["Escape"]);
-    }
-    if updated { Ok(()) } else { Err("Claude Code no ha actualizado las cuotas".into()) }
+pub async fn usage_refresh(core: State<'_, Shared>) -> Result<(), String> {
+    let claude = core.claude.clone();
+    tauri::async_runtime::spawn_blocking(move || refresh_quota(&claude)).await.map_err(|e| e.to_string())?
 }
 
 /// Ciclo real de modos de la sesión (Mayús+Tab): se recorre una vuelta y se vuelve al de partida.

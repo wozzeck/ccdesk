@@ -262,7 +262,7 @@ export const api = {
   sessionEfforts: (key: string) =>
     invoke<{ levels: string[]; current: string }>('session_efforts', { key }),
   sessionModes: (key: string) => invoke<string[]>('session_modes', { key }),
-  usageRefresh: (key: string) => invoke<void>('usage_refresh', { key }),
+  usageRefresh: () => invoke<void>('usage_refresh'),
   setModel: (key: string, n: number, label: string) => invoke<ChangeResult>('session_set_model', { key, n, label }),
   setEffort: (key: string, effort: string) => invoke<ChangeResult>('session_set_effort', { key, effort }),
   setMode: (key: string, mode: string) => invoke<string>('session_set_mode', { key, mode }),
