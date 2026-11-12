@@ -120,6 +120,35 @@ impl Persist {
         self.unread.retain(|k| k != key);
     }
 
+    /// Funde la entrada `from` en `into` (la misma conversación con dos claves): `into` hereda el
+    /// sitio de `from` en ancladas, orden y exentas si no lo tiene, el nombre puesto a mano si no
+    /// tiene uno, sus to-dos y lo sin leer, y `from` se olvida.
+    pub fn merge_key(&mut self, from: &str, into: &str) {
+        if from == into {
+            return;
+        }
+        for list in [&mut self.pinned, &mut self.order, &mut self.exempt] {
+            if list.iter().any(|k| k == into) {
+                list.retain(|k| k != from);
+            } else if let Some(i) = list.iter().position(|k| k == from) {
+                list[i] = into.to_string();
+            }
+        }
+        if let Some(n) = self.names.remove(from) {
+            self.names.entry(into.to_string()).or_insert(n);
+        }
+        if let Some(n) = self.notes.remove(from) {
+            self.notes.entry(into.to_string()).or_default().extend(n);
+        }
+        if self.set_unread(from, false) {
+            self.set_unread(into, true);
+        }
+        if self.last_active.as_deref() == Some(from) {
+            self.last_active = Some(into.to_string());
+        }
+        self.known.remove(from);
+    }
+
     /// Marca o desmarca «sin leer»; true si ha cambiado.
     pub fn set_unread(&mut self, key: &str, unread: bool) -> bool {
         if self.unread.iter().any(|k| k == key) == unread {
@@ -184,5 +213,37 @@ mod tests {
         // Un state.json de antes, sin el campo, se sigue leyendo.
         let old: Persist = serde_json::from_str(r#"{"version":1,"order":["x"]}"#).unwrap();
         assert!(old.unread.is_empty() && old.order == ["x"]);
+    }
+
+    #[test]
+    fn merge_keys() {
+        let note = |t: &str| Note { id: t.into(), text: t.into(), created: 0 };
+        let mut p = Persist::default();
+        // «todo» anclada como cc-590b75fd y, duplicada al incorporarla con un id provisional, cc-8e1ac618.
+        p.known.insert("cc-590b75fd".into(), Known { sid: "590b75fd".into(), ..Default::default() });
+        p.known.insert("cc-8e1ac618".into(), Known { sid: "590b75fd".into(), ..Default::default() });
+        p.pinned = vec!["cc-590b75fd".into()];
+        p.order = vec!["cc-a".into(), "cc-8e1ac618".into()];
+        p.exempt = vec!["cc-8e1ac618".into()];
+        p.names.insert("cc-8e1ac618".into(), "provisional".into());
+        p.notes.insert("cc-590b75fd".into(), vec![note("vieja")]);
+        p.notes.insert("cc-8e1ac618".into(), vec![note("nueva")]);
+        p.unread = vec!["cc-8e1ac618".into()];
+        p.last_active = Some("cc-8e1ac618".into());
+        p.merge_key("cc-8e1ac618", "cc-590b75fd");
+        assert_eq!(p.known.keys().collect::<Vec<_>>(), ["cc-590b75fd"]);
+        assert_eq!(p.pinned, ["cc-590b75fd"]);
+        assert_eq!(p.order, ["cc-a", "cc-590b75fd"]); // anclada: `arrange` la pinta una vez
+        assert_eq!(p.exempt, ["cc-590b75fd"]);
+        assert_eq!(p.names.get("cc-590b75fd").map(String::as_str), Some("provisional"));
+        assert_eq!(p.notes["cc-590b75fd"].iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["vieja", "nueva"]);
+        assert_eq!(p.unread, ["cc-590b75fd"]);
+        assert_eq!(p.last_active.as_deref(), Some("cc-590b75fd"));
+        // El nombre que ya tuviera la que se queda no se pisa.
+        p.known.insert("cc-x".into(), Known::default());
+        p.names.insert("cc-x".into(), "otro".into());
+        p.merge_key("cc-x", "cc-590b75fd");
+        assert_eq!(p.names.get("cc-590b75fd").map(String::as_str), Some("provisional"));
+        assert!(!p.names.contains_key("cc-x"));
     }
 }

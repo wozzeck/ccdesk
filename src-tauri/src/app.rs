@@ -222,6 +222,17 @@ fn short(sid: &str) -> String {
     }
 }
 
+/// De varias claves de la misma conversación `sid`, la que se queda: la anclada; si no, la natural
+/// (`cc-<8 primeros del sid>`); si no, la más antigua.
+fn sid_owner<'a>(p: &Persist, sid: &str, keys: impl Iterator<Item = &'a String>) -> Option<String> {
+    let natural = format!("{}{}", tmux::PREFIX, short(sid));
+    keys.min_by_key(|k| {
+        let started = p.known.get(k.as_str()).map_or(u64::MAX, |x| x.started_at);
+        (!p.pinned.contains(k), **k != natural, started, k.to_string())
+    })
+    .cloned()
+}
+
 /// Clave para una sesión nueva o adoptada: `cc-<8 primeros del sid>` (sin chocar con otra).
 fn key_for(p: &Persist, sid: &str) -> String {
     let mut k = format!("{}{}", tmux::PREFIX, short(sid));
@@ -888,6 +899,7 @@ pub fn build(core: &Core) -> Snapshot {
     // 1) Sesiones gestionadas vivas: ventanas de la sesión tmux de ccdesk (y antiguas -L cc).
     // Cadena de padres de cada proceso claude, una vez por vuelta (se compara con cada ventana).
     let chains: Vec<Vec<u32>> = regs.iter().map(|r| registry::ancestors(r.pid)).collect();
+    let window_keys: HashSet<String> = wins.iter().filter_map(|w| w.key.clone()).collect();
     for w in &wins {
         // Su proceso claude es el del pane o desciende de él (ventanas adoptadas: shell → claude).
         let ri = regs.iter().enumerate().position(|(i, r)| {
@@ -906,6 +918,41 @@ pub fn build(core: &Core) -> Snapshot {
             }
             // Una ventana normal (una shell): no es de ccdesk.
             (None, None) => continue,
+        };
+        // Una conversación que ccdesk ya conocía con otra clave (p. ej. un `claude --resume`
+        // lanzado fuera, que al arrancar registra un id provisional y se incorporó con él): queda
+        // una sola entrada, la de `sid_owner`, con la ventana. Con dos, cada una «recogía» la
+        // ventana en una vuelta (`reattach_opened`), sin fin. Las que tienen ventana propia son
+        // otros procesos con la misma conversación (el aviso de duplicada): ésas no se tocan.
+        let key = match reg.map(|r| r.session_id.as_str()).filter(|s| !s.is_empty()) {
+            Some(sid) => {
+                let spare: Vec<String> = p
+                    .known
+                    .iter()
+                    .filter(|(k, x)| x.sid == sid && **k != key && !window_keys.contains(k.as_str()))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                match sid_owner(&p, sid, spare.iter().chain([&key])) {
+                    Some(owner) if !spare.is_empty() => {
+                        for k in spare.iter().chain([&key]).filter(|k| **k != owner) {
+                            p.merge_key(k, &owner);
+                        }
+                        if owner != key {
+                            core.tmux.set_key(&w.host, &owner);
+                        }
+                        log(&format!("fundir {} en {owner}: la misma conversación ({sid})", {
+                            let mut all = spare.clone();
+                            all.push(key.clone());
+                            all.retain(|k| *k != owner);
+                            all.join(", ")
+                        }));
+                        dirty = true;
+                        owner
+                    }
+                    _ => key,
+                }
+            }
+            None => key,
         };
         if let Some(i) = ri {
             used[i] = true;
@@ -1459,7 +1506,19 @@ fn reattach_opened(core: &Core, snap: &Snapshot) {
     // Sólo si el duplicado corre en tmux (el texto de `describe` lo dice): si no, no hay nada que
     // recoger y no vale la pena releer el registro en cada vuelta.
     let in_tmux = |v: &&SessionView| v.dupes.iter().any(|d| d.contains("· tmux "));
-    for v in snap.sessions.iter().filter(|v| v.managed && v.status == "stopped" && in_tmux(v)) {
+    // Una conversación ya abierta en otra entrada gestionada no se recoge: le quitaría la ventana, y
+    // a la vuelta siguiente aquélla se la quitaría a ésta.
+    let live: HashSet<&str> = snap
+        .sessions
+        .iter()
+        .filter(|s| s.managed && s.status != "stopped" && !s.sid.is_empty())
+        .map(|s| s.sid.as_str())
+        .collect();
+    for v in snap
+        .sessions
+        .iter()
+        .filter(|v| v.managed && v.status == "stopped" && in_tmux(v) && !live.contains(v.sid.as_str()))
+    {
         let _ = reattach(core, &v.key, &v.sid, &v.title);
     }
 }
@@ -3353,6 +3412,29 @@ mod tests {
         // Sin ventana en curso (pasado el reset y sin llamadas) no hay hora de reset: no cuenta.
         let idle = json!({ "rate_limits": { "five_hour": { "utilization": 0, "resets_at": null } } });
         assert_eq!(quota_from_usage(&idle), None);
+    }
+
+    #[test]
+    fn same_conversation_owner() {
+        use super::sid_owner;
+        use crate::state::{Known, Persist};
+        let sid = "590b75fd-4d06-49c3-99a0-491e3cbca79b";
+        let mut p = Persist::default();
+        let known = |started: u64| Known { sid: sid.into(), started_at: started, ..Default::default() };
+        p.known.insert("cc-590b75fd".into(), known(300));
+        p.known.insert("cc-8e1ac618".into(), known(100));
+        p.known.insert("cc-0000aaaa".into(), known(50));
+        let keys = ["cc-8e1ac618".to_string(), "cc-590b75fd".to_string(), "cc-0000aaaa".to_string()];
+        // Sin anclar: la de la clave natural, aunque sea la más nueva.
+        assert_eq!(sid_owner(&p, sid, keys.iter()).as_deref(), Some("cc-590b75fd"));
+        // Anclada, gana a la natural.
+        p.pinned = vec!["cc-8e1ac618".into()];
+        assert_eq!(sid_owner(&p, sid, keys.iter()).as_deref(), Some("cc-8e1ac618"));
+        // Sin anclada ni natural: la más antigua; una clave sin entrada (recién incorporada) va la última.
+        p.pinned.clear();
+        let others = ["cc-nueva".to_string(), "cc-8e1ac618".to_string(), "cc-0000aaaa".to_string()];
+        assert_eq!(sid_owner(&p, sid, others.iter()).as_deref(), Some("cc-0000aaaa"));
+        assert_eq!(sid_owner(&p, sid, [].iter()), None);
     }
 
     #[test]
