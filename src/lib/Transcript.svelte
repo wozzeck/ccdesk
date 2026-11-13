@@ -7,6 +7,7 @@
   import { ui } from './ui.svelte';
   import AgentCard from './AgentCard.svelte';
   import { outbox, flyIn, morph } from './outbox.svelte';
+  import { queueReplica, squash } from './queue';
   import { copyPlain, copyRich, portableHtml, visibleText } from './clipboard';
   import { FILE_TOOLS, IMAGE_RE, OPEN_ICON, resolveFileRefs, splitRefs } from './filerefs';
   import { splitAttachments, type AttSeg } from './files';
@@ -73,7 +74,14 @@
   // llegar lo siguiente; hasta entonces, el último sin respuesta con Claude esperando también lo
   // está (con unos segundos de margen: el estado «trabajando» llega algo después que el mensaje).
   const withdrawn = $derived(new Set(items.flatMap((it) => (it.kind === 'withdrawn' ? [it.of] : []))));
-  const QUIET = new Set<Item['kind']>(['queueAdd', 'queueDequeue', 'queueRemove', 'queueClear', 'withdrawn']);
+  const QUIET = new Set<Item['kind']>([
+    'queueAdd',
+    'queueDequeue',
+    'queueTaken',
+    'queueRemove',
+    'queueClear',
+    'withdrawn',
+  ]);
   const lastUser = $derived.by(() => {
     if (!idle) return -1;
     for (let k = items.length - 1; k >= 0; k--) {
@@ -205,35 +213,17 @@
     return out;
   });
 
-  // Réplica de la cola de entrada de Claude Code (FIFO): lo enviado mientras trabaja y aún
-  // no recogido. Los avisos internos (<task-notification>…) también pasan por la cola, pero
-  // no se enseñan. A veces Claude Code apunta un mensaje en la cola sin su texto (durante
-  // /compact, por ejemplo): se enseña con el que se envió desde aquí y, si se escribió en la
-  // terminal y no se sabe qué dice, no se enseña (pero sigue contando para el orden de la cola).
+  // Lo enviado mientras Claude trabaja y aún no recogido (réplica de su cola de entrada, queue.ts).
+  // Los avisos internos (<task-notification>…) también pasan por la cola, pero no se enseñan. A
+  // veces Claude Code apunta un mensaje en la cola sin su texto (durante /compact, por ejemplo): se
+  // enseña con el que se envió desde aquí y, si se escribió en la terminal y no se sabe qué dice,
+  // no se enseña (pero sigue contando en la cola). Mientras vuela la burbuja provisional, ésta
+  // espera (pero ocupa su sitio en la cola).
   const pending = $derived.by(() => {
     if (!showPending) return [];
-    const q: { raw: string; text: string; show: boolean; id: number; at: number }[] = [];
-    for (const [idx, it] of items.entries()) {
-      if (it.kind === 'queueAdd') {
-        const text = it.text || blankText.get(idx) || outbox.recall(sessionKey, it.ts) || '';
-        // Mientras vuela la burbuja provisional, ésta espera (pero ocupa su sitio en la cola).
-        q.push({
-          raw: it.text,
-          text,
-          show: !it.system && !!text.trim() && !held.has(idx),
-          id: startIndex + idx,
-          at: Date.parse(it.ts) || 0,
-        });
-      } else if (it.kind === 'queueDequeue') q.shift();
-      else if (it.kind === 'queueClear') q.length = 0;
-      else if (it.kind === 'queueRemove') {
-        let k = q.findIndex((x) => x.raw === it.text);
-        if (k < 0) k = q.findIndex((x) => x.text === it.text);
-        if (k < 0) k = q.findIndex((x) => !x.raw);
-        if (k >= 0) q.splice(k, 1);
-      }
-    }
-    return q.filter((x) => x.show);
+    return queueReplica(items, (idx) => blankText.get(idx) || outbox.recall(sessionKey, items[idx].ts) || '')
+      .filter((x) => !x.system && !!x.text.trim() && !held.has(x.idx))
+      .map((x) => ({ text: x.text, id: startIndex + x.idx, at: Date.parse(items[x.idx].ts) || 0 }));
   });
 
   // El informe puede llegar por hand-back (mensaje del subagente), en el aviso de fin o,
@@ -250,9 +240,6 @@
   // está en vuelo: el real espera y entra al aterrizar, en el mismo sitio, sin salto. Sólo cuentan
   // los items posteriores al envío, para no confundirlo con un mensaje igual anterior.
   type QueueAdd = Extract<Item, { kind: 'queueAdd' }>;
-  /** Para comparar lo enviado con lo que apunta Claude Code, que no guarda los blancos tal cual (un
-   *  tabulador tecleado lo apunta como espacios): cuentan las palabras, no los blancos entre ellas. */
-  const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
   /** `text` viene ya pasado por `squash`. */
   const isMatch = (it: Item, text: string) =>
     (it.kind === 'user' && squash(it.text) === text) ||

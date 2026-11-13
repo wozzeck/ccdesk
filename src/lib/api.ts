@@ -185,6 +185,8 @@ export type Item =
   | { kind: 'summary'; ts: string; text: string }
   | { kind: 'queueAdd'; ts: string; text: string; system: boolean }
   | { kind: 'queueDequeue'; ts: string }
+  /** Lo que entregó una salida de la cola: tu mensaje o (`system`) un aviso interno, recortado. */
+  | { kind: 'queueTaken'; ts: string; text: string; system: boolean }
   | { kind: 'queueRemove'; ts: string; text: string }
   | { kind: 'queueClear'; ts: string }
   /** Tu mensaje `of` (índice global) se quedó fuera: lo interrumpiste antes de que respondiera. */

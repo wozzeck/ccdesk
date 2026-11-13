@@ -150,8 +150,11 @@ pub enum Item {
     Summary { ts: String, text: String },
     /// Cola de entrada de Claude Code (FIFO). `system`: aviso interno (`<task-notification>`…).
     QueueAdd { ts: String, text: String, system: bool },
-    /// Entregado el primero de la cola (no trae texto).
+    /// Salió uno de la cola (no dice cuál: Claude Code saca por prioridad, no siempre el primero).
     QueueDequeue { ts: String },
+    /// Lo que entregó esa salida, como turno nuevo: tu mensaje (`promptSource: queued`) o un aviso
+    /// interno (`system`, recortado). Va justo delante de los items de su línea.
+    QueueTaken { ts: String, text: String, system: bool },
     /// Retirado uno concreto (absorbido a mitad de turno, cancelado…).
     QueueRemove { ts: String, text: String },
     /// `popAll`: el usuario recuperó a la caja de entrada todo lo que tenía en cola.
@@ -485,6 +488,30 @@ fn parse_value(v: &Value) -> Vec<Item> {
 }
 
 fn parse_user(v: &Value, ts: String) -> Vec<Item> {
+    let mut out: Vec<Item> = queue_taken(v, &ts).into_iter().collect();
+    out.extend(parse_user_body(v, ts));
+    out
+}
+
+/// El turno viene de la cola de entrada: qué entregó (también si es un registro `isMeta`, como los
+/// mensajes de otras sesiones, que no se enseñan pero sí salieron de la cola).
+fn queue_taken(v: &Value, ts: &str) -> Option<Item> {
+    let system = match v["promptSource"].as_str()? {
+        "queued" => false,
+        "system" => true,
+        _ => return None,
+    };
+    let c = &v["message"]["content"];
+    let text = match c.as_str() {
+        Some(s) => s.to_string(),
+        None => c.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+    };
+    // Un aviso sólo hace falta reconocerlo por el principio (puede ocupar kilobytes).
+    let text = if system { trunc_line(&text, 600) } else { text };
+    Some(Item::QueueTaken { ts: ts.to_string(), text, system })
+}
+
+fn parse_user_body(v: &Value, ts: String) -> Vec<Item> {
     if v["isMeta"].as_bool() == Some(true) {
         return vec![];
     }
@@ -762,7 +789,8 @@ fn parse_attachment(v: &Value, ts: String) -> Vec<Item> {
     }]
 }
 
-/// Se replica la cola tal cual (FIFO); la UI sólo enseña las entradas que no son avisos internos.
+/// La cola de entrada de Claude Code, tal como la apunta; la UI la replica (casando cada salida con
+/// su `QueueTaken`) y sólo enseña las entradas que no son avisos internos.
 fn parse_queue(v: &Value, ts: String) -> Vec<Item> {
     let text = v["content"].as_str().unwrap_or("").to_string();
     match v["operation"].as_str() {
@@ -1213,6 +1241,25 @@ mod tests {
         assert!(matches!(parse_line(tn).as_slice(), [Item::QueueAdd { system: true, .. }]));
         let dq = r#"{"type":"queue-operation","operation":"dequeue","timestamp":"t"}"#;
         assert!(matches!(parse_line(dq).as_slice(), [Item::QueueDequeue { .. }]));
+    }
+
+    #[test]
+    fn queue_deliveries() {
+        // Tu mensaje en cola, entregado como turno nuevo: la entrega va delante del mensaje.
+        let q = r#"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":"flashea"},"uuid":"u1","timestamp":"t","origin":{"kind":"human"},"promptSource":"queued"}"#;
+        assert!(matches!(parse_line(q).as_slice(),
+            [Item::QueueTaken { text, system: false, .. }, Item::User { text: t2, mid_turn: false, .. }] if text == "flashea" && t2 == "flashea"));
+        // Un aviso: también cuenta como salida de la cola, recortado.
+        let long = "x".repeat(2000);
+        let n = format!(r#"{{"parentUuid":"p","isSidechain":false,"type":"user","message":{{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>\n<summary>{long}</summary>\n</task-notification>"}},"uuid":"u2","timestamp":"t","promptSource":"system"}}"#);
+        assert!(matches!(parse_line(&n).as_slice(),
+            [Item::QueueTaken { text, system: true, .. }, Item::TaskNotice { .. }] if text.starts_with("<task-notification>") && text.len() < 700));
+        // El mensaje de otra sesión es isMeta (no se enseña), pero salió de la cola.
+        let peer = r#"{"parentUuid":"p","isSidechain":false,"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Another Claude session sent a message:\n<agent-message from=\"a1\">x</agent-message>"}]},"uuid":"u3","timestamp":"t","promptSource":"system"}"#;
+        assert!(matches!(parse_line(peer).as_slice(), [Item::QueueTaken { system: true, text, .. }] if text.contains("<agent-message from=\"a1\">")));
+        // Lo escrito con Claude esperando no pasa por la cola.
+        let typed = r#"{"parentUuid":"p","isSidechain":false,"type":"user","message":{"role":"user","content":"hola"},"uuid":"u4","timestamp":"t","promptSource":"typed"}"#;
+        assert!(matches!(parse_line(typed).as_slice(), [Item::User { .. }]));
     }
 
     #[test]
