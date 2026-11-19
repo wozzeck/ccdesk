@@ -38,8 +38,25 @@
   // Sin distinguir mayúsculas ni tildes («configuracion» encuentra «Configuración»).
   const fold = (s: string) => s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
   const q = $derived(fold(query.trim()));
-  const matches = (s: SessionView) =>
-    !q || !!hits[s.key] || [s.title, s.cwd, s.location ?? '', s.sid].some((x) => fold(x).includes(q));
+  /** Dónde coincide lo buscado: 0 en el título, 1 en la carpeta, el sitio de tmux o el id, 2 sólo
+   *  dentro de la conversación (lo encuentra el backend, y llega después), -1 en ningún sitio. */
+  function rank(s: SessionView): number {
+    if (!q || fold(s.title).includes(q)) return 0;
+    if ([s.cwd, s.location ?? '', s.sid].some((x) => fold(x).includes(q))) return 1;
+    return hits[s.key] ? 2 : -1;
+  }
+  const matches = (s: SessionView) => rank(s) >= 0;
+  /** Lo que se enseña de `list`. Buscando, por dónde coincide, con el título primero: lo que sale
+   *  nada más teclear se queda arriba cuando llega lo encontrado en las conversaciones. Dentro de
+   *  cada parte, el orden de siempre. */
+  function results(list: SessionView[]): SessionView[] {
+    if (!q) return list;
+    return list
+      .map((s) => ({ s, r: rank(s) }))
+      .filter((x) => x.r >= 0)
+      .sort((a, b) => a.r - b.r)
+      .map((x) => x.s);
+  }
 
   // Búsqueda también en las conversaciones (lo escrito y lo contestado; el backend lo indexa).
   let hits = $state<Record<string, SearchHit>>({});
@@ -82,10 +99,13 @@
     const shown = untrack(() => managedAll.map((s) => s.key).join('\0'));
     if (fromSnap === shown || now > L.until) localLayout = null;
   });
-  const managed = $derived(managedAll.filter(matches));
+  const managed = $derived(results(managedAll));
   const pinnedCount = $derived(managed.filter((s) => s.pinned).length);
+  /** Dónde va la raya: buscando, entre lo que coincide por nombre y lo que sólo coincide en la
+   *  conversación; si no, entre las fijadas y el resto. */
+  const dividerAt = $derived(q ? managed.filter((s) => rank(s) < 2).length : pinnedCount);
   const externalsAll = $derived(snap.sessions.filter((s) => !s.managed));
-  const externals = $derived(externalsAll.filter(matches));
+  const externals = $derived(results(externalsAll));
   const extAttention = $derived(externals.filter((s) => ATTENTION.includes(s.status)).length);
 
   function searchKey(e: KeyboardEvent) {
@@ -423,7 +443,7 @@
 
   <div class="list" bind:this={listEl}>
     {#each managed as s, i (s.key)}
-      {#if i === pinnedCount && pinnedCount > 0}<div class="divider"></div>{/if}
+      {#if i === dividerAt && dividerAt > 0}<div class="divider"></div>{/if}
       <div class="item" data-item data-key={s.key} class:lifted={drag?.active && drag.key === s.key}>
       <div
         class="row"
