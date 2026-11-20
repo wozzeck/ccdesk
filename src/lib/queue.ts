@@ -22,9 +22,11 @@ export interface Queued {
  * Una salida de la cola (`queueDequeue`) no dice cuál sale, y no siempre es la primera: Claude Code
  * saca por prioridad, y algunos avisos internos los descarta sin apuntarlo (se quedarían delante
  * para siempre). Por eso cada salida se casa con la entrega que la sigue (`queueTaken`: tu mensaje
- * o un aviso, con su texto). Sólo si no llega ninguna (versiones que no la marcaban) se da por
- * salida la primera, al llegar el siguiente apunte o un mensaje sin marca de entrega; mientras
- * tanto, lo recién salido sigue en la cola hasta que se escribe su entrega.
+ * o un aviso, con su texto). Los comandos (`/compact`…) no dejan entrega: los casa su propia línea
+ * (a `/compact` a secas, el resumen de la compactación). Sólo si no llega nada de eso (versiones
+ * que no lo marcaban) se da por salida la primera, al llegar el siguiente apunte o un mensaje sin
+ * marca de entrega; mientras tanto, lo recién salido sigue en la cola hasta que se escribe su
+ * entrega.
  * `textOf`: texto de un apunte que no lo trae (por su índice en `items`).
  */
 export function queueReplica(items: Item[], textOf: (idx: number) => string = () => ''): Queued[] {
@@ -37,6 +39,13 @@ export function queueReplica(items: Item[], textOf: (idx: number) => string = ()
   };
   const settle = () => {
     for (; owed > 0; owed--) q.shift();
+  };
+  /** Se ha ejecutado el comando `text` (`/compact`, `/todo-list`…): fuera su apunte, y con él la
+   *  salida que tuviera pendiente. */
+  const ran = (text: string) => {
+    if (!drop((x) => !x.system && squash(x.raw || x.text) === text)) return false;
+    if (owed > 0) owed--;
+    return true;
   };
   items.forEach((it, idx) => {
     switch (it.kind) {
@@ -67,9 +76,19 @@ export function queueReplica(items: Item[], textOf: (idx: number) => string = ()
       }
       case 'user':
       case 'command':
+        // Un comando en cola sale sin marca de entrega: lo casa la línea del propio comando, que
+        // llega al ejecutarse. Darlo por salida al primero de la cola fallaría si delante queda un
+        // aviso interno que Claude Code consumió sin apuntarlo: se iría el aviso, que no se ve, y
+        // el comando se quedaría «en cola» para siempre.
+        if (it.kind === 'command' && ran(squash(it.args ? `${it.name} ${it.args}` : it.name))) break;
         // Un mensaje sin marca de entrega delante (versiones que no la apuntaban, o escrito con
         // Claude esperando): las salidas pendientes ya se entregaron.
         if (!(it.kind === 'user' && it.midTurn) && items[idx - 1]?.kind !== 'queueTaken') settle();
+        break;
+      case 'summary':
+        // `/compact` a secas no deja item de comando (no se enseña: ya está el resumen); lo casa el
+        // resumen con que acaba la compactación.
+        ran('/compact');
         break;
       case 'queueClear':
         q.length = 0;
