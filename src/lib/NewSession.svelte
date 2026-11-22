@@ -94,7 +94,7 @@
           <option value="opus">Opus</option>
           <option value="sonnet">Sonnet</option>
           <option value="haiku">Haiku</option>
-          <option value="claude-fable-5-1">Fable 5.1</option>
+          <option value="fable">Fable</option>
         </select>
       </label>
       <label>
