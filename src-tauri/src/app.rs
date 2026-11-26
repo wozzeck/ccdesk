@@ -53,6 +53,9 @@ pub struct Core {
     pub replies: Mutex<HashMap<String, ReplyTail>>,
     /// Cambios de modelo y effort encolados por sesión: se aplican en cuanto queda inactiva.
     pub pending: Mutex<HashMap<String, Pending>>,
+    /// Sesiones a las que ccdesk ha pedido cerrarse, y cuándo: mientras se cierran no se avisa
+    /// de ellas (al salir pasan por «trabajando» y vuelven a reposo).
+    pub stopping: Mutex<HashMap<String, Instant>>,
 }
 
 /// Cambio de modelo o de effort pedido con la sesión ocupada (trabajando, pidiendo permiso,
@@ -1379,6 +1382,7 @@ fn find_view(core: &Core, key: &str) -> Option<SessionView> {
 fn graceful_stop(core: &Core, key: &str) {
     let Some(h) = host_of(core, key) else { return };
     log(&format!("detener {key} ({h:?})"));
+    core.stopping.lock().unwrap().insert(key.to_string(), Instant::now());
     let pid = core.views.lock().unwrap().iter().find(|v| v.key == key).and_then(|v| v.pid);
     let t = core.tmux.clone();
     let _ = t.send_keys(&h, &["C-c"]);
@@ -1409,6 +1413,8 @@ fn resume_inner(core: &Core, key: &str) -> Result<(), String> {
 
 /// Reanuda con flags extra (p. ej. `--permission-mode bypassPermissions`).
 fn resume_with(core: &Core, key: &str, extra: &[String]) -> Result<(), String> {
+    // Reanudada: vuelve a avisar de ella aunque acabara de detenerse.
+    core.stopping.lock().unwrap().remove(key);
     // Ventana que sigue abierta: si claude sigue vivo no hay nada que hacer; si sólo queda la
     // shell (se salió a mano), se desvincula y la sesión se reanuda en una ventana nueva.
     let lingering = core.hosts.lock().unwrap().get(key).cloned();

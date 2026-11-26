@@ -3,6 +3,10 @@
 //! delante con esa sesión abierta. No se avisa de la sesión que se está mirando (ventana con el
 //! foco y esa sesión abierta), y al mirarla se cierra el aviso que tuviera.
 //!
+//! «Ha terminado» sólo si ha respondido algo mientras trabajaba: Claude Code pasa también por
+//! «trabajando» cuando compacta él solo una sesión parada, y eso no trae nada nuevo. De una sesión
+//! que ccdesk está deteniendo no se avisa de nada.
+//!
 //! Cada aviso con botón mantiene vivo su `notify-send` (y un hilo que lo escucha) hasta que se
 //! cierra, y Cinnamon no los cierra solos: por eso se retiran en cuanto dejan de valer (la sesión
 //! cambia de estado) y, en todo caso, pasado un tiempo.
@@ -25,6 +29,8 @@ const ATTENTION: [&str; 2] = ["waiting", "blocked"];
 const SETTLE: Duration = Duration::from_millis(2000);
 /// Tope de vida de un aviso.
 const MAX_AGE: Duration = Duration::from_secs(30 * 60);
+/// Tras pedir a una sesión que se cierre, lo que se tarda como mucho en verla detenida.
+const STOPPING: Duration = Duration::from_secs(60);
 const BODY_MAX: usize = 220;
 
 /// Aviso abierto de una sesión: su id de libnotify (cuando notify-send lo dice), el estado de la
@@ -38,6 +44,10 @@ struct Shown {
 #[derive(Default)]
 pub struct Notifier {
     prev: HashMap<String, String>,
+    /// Última respuesta de Claude (`last_reply`) vista en cada sesión, y la que tenía al empezar
+    /// a trabajar: si al quedar en reposo es la misma, no ha respondido nada.
+    prev_reply: HashMap<String, Option<u64>>,
+    reply_from: HashMap<String, Option<u64>>,
     /// Sesiones que acaban de quedar en reposo, a la espera de confirmar que han terminado.
     pending: HashMap<String, Instant>,
     /// Aviso abierto por sesión, para sustituirlo o cerrarlo.
@@ -52,10 +62,25 @@ impl Notifier {
             .unwrap_or(false);
         let active = core.active.lock().unwrap().clone();
         let (on_done, on_att) = (snap.settings.notify_done, snap.settings.notify_attention);
+        let stopping: HashSet<String> = {
+            let mut st = core.stopping.lock().unwrap();
+            st.retain(|_, t| t.elapsed() < STOPPING);
+            st.keys().cloned().collect()
+        };
+        let working = |st: &str| st == "busy" || ATTENTION.contains(&st);
         let mut seen = HashSet::new();
         for s in &snap.sessions {
             seen.insert(s.key.as_str());
             let prev = self.prev.insert(s.key.clone(), s.status.clone());
+            let prev_reply = self.prev_reply.insert(s.key.clone(), s.last_reply);
+            if working(&s.status) && !prev.as_deref().is_some_and(working) {
+                let from = if prev.is_some() { prev_reply.flatten() } else { s.last_reply };
+                self.reply_from.insert(s.key.clone(), from);
+            }
+            if stopping.contains(&s.key) {
+                self.pending.remove(&s.key);
+                continue;
+            }
             if focused && active.as_deref() == Some(s.key.as_str()) {
                 self.pending.remove(&s.key);
                 self.close(&s.key);
@@ -86,12 +111,16 @@ impl Notifier {
             }
             if s.status == "idle" && self.pending.get(&s.key).is_some_and(|t| t.elapsed() >= SETTLE) {
                 self.pending.remove(&s.key);
-                if on_done {
+                let from = self.reply_from.get(&s.key).copied().flatten();
+                let replied = from.is_none() || s.last_reply.is_none() || s.last_reply != from;
+                if on_done && replied {
                     self.done(app, s);
                 }
             }
         }
         self.prev.retain(|k, _| seen.contains(k.as_str()));
+        self.prev_reply.retain(|k, _| seen.contains(k.as_str()));
+        self.reply_from.retain(|k, _| seen.contains(k.as_str()));
         self.pending.retain(|k, _| seen.contains(k.as_str()));
         // Sesiones que ya no están: su aviso tampoco.
         let gone: Vec<String> = self
