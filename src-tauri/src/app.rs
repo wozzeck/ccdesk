@@ -96,6 +96,10 @@ pub struct ModelOpt {
     pub n: u32,
     pub label: String,
     pub desc: String,
+    /// Effort que trae el modelo por sí solo: el que enseñaba su fila del selector en la sesión
+    /// oculta, que no ha elegido ninguno (el guardado para él en los ajustes, o el suyo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -1427,13 +1431,22 @@ fn resume_with(core: &Core, key: &str, extra: &[String]) -> Result<(), String> {
     let mut argv = vec![core.claude.to_string_lossy().into_owned(), flag.into(), sid.clone()];
     argv.extend(launch_flags(core));
     argv.extend(extra.iter().cloned());
-    // Recuperar el modelo y el effort con los que estaba (último volcado del statusline).
+    // Recuperar el modelo y el effort con los que estaba (último volcado del statusline): al
+    // reanudar, Claude Code no los recuerda.
     if let Some(st) = read_status(&sid) {
-        if let Some(m) = st["model"]["id"].as_str().filter(|s| !s.is_empty()) {
-            argv.extend(["--model".into(), m.to_string()]);
+        let model = st["model"]["id"].as_str().unwrap_or("");
+        if !model.is_empty() {
+            argv.extend(["--model".into(), model.to_string()]);
         }
         if let Some(e) = st["effort"]["level"].as_str().filter(|s| !s.is_empty()) {
-            argv.extend(["--effort".into(), e.to_string()]);
+            // `--effort` cuenta como elegido a mano, y Claude Code mantiene el elegido a mano al
+            // cambiar de modelo, en vez de poner el de cada modelo. Si es el que el modelo trae
+            // por sí solo, no se pasa: Claude Code pone el mismo y sigue cambiando con el modelo,
+            // como si la sesión no se hubiera parado.
+            let name = st["model"]["display_name"].as_str().unwrap_or("");
+            if model_effort(core, model, name).as_deref() != Some(e) {
+                argv.extend(["--effort".into(), e.to_string()]);
+            }
         }
     }
     core.opts.lock().unwrap().modes.remove(key);
@@ -2163,9 +2176,21 @@ fn picker_rows(screen: &str) -> (Vec<ModelOpt>, Option<u32>, usize) {
         };
         let label = label.trim_end_matches('✔').trim().to_string();
         if is_cursor { cursor = Some(n); }
-        rows.push(ModelOpt { n, label, desc: desc.to_string() });
+        rows.push(ModelOpt { n, label, desc: desc.to_string(), effort: None });
     }
     (rows, cursor, more)
+}
+
+/// Effort que enseña el selector de modelos para la fila del cursor, en minúsculas: «◉ xHigh
+/// effort ←/→ to adjust», «◐ Medium effort (default) ←/→ to adjust»…
+fn picker_effort(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let start = lines.iter().rposition(|l| l.contains("Select model"))?;
+    let line = lines[start..].iter().find(|l| l.contains(" effort") && l.contains("to adjust"))?;
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let i = words.iter().position(|w| *w == "effort")?;
+    let level = words.get(i.checked_sub(1)?)?.to_lowercase();
+    EFFORT_LEVELS.contains(&level.as_str()).then_some(level)
 }
 
 /// Niveles del deslizador de `/effort` y el seleccionado (el que está bajo `▲`). Sólo cuentan
@@ -2252,14 +2277,41 @@ fn step_and_capture(t: &Tmux, h: &Host, key: &str) -> String {
 /// Recorre el selector de modelos entero: sólo se ven unas filas. Es circular (se para al volver
 /// a la de partida); si no lo fuera, al llegar abajo sube hasta arriba.
 fn read_model_list(t: &Tmux, h: &Host, first: &str) -> Vec<ModelOpt> {
-    let (rows, start, _) = picker_rows(first);
-    let mut all: HashMap<u32, ModelOpt> = rows.into_iter().map(|r| (r.n, r)).collect();
-    let (mut dir, mut prev) = ("Down", start);
-    for _ in 0..80 {
-        let (rows, cur, _) = picker_rows(&step_and_capture(t, h, dir));
+    let mut all: HashMap<u32, ModelOpt> = HashMap::new();
+    // Las filas a la vista y el effort de la del cursor, que el selector enseña debajo. El effort,
+    // cuando dos capturas seguidas coinciden: con la pantalla a medio repintar, la fila del cursor
+    // puede ser ya la nueva y la línea del effort, todavía la de la anterior. Si no se asienta,
+    // ese modelo se queda sin effort conocido (al reanudar se pasa entonces `--effort`).
+    let mut take = |sc: &str| {
+        let (rows, cur, _) = picker_rows(sc);
         for r in rows {
             all.entry(r.n).or_insert(r);
         }
+        if let Some(m) = cur.and_then(|c| all.get_mut(&c)).filter(|m| m.effort.is_none()) {
+            let mut seen = picker_effort(sc);
+            for _ in 0..3 {
+                if seen.is_none() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(80));
+                let again = t.capture(h).unwrap_or_default();
+                if picker_rows(&again).1 != cur {
+                    break;
+                }
+                let e = picker_effort(&again);
+                if e == seen {
+                    m.effort = e;
+                    break;
+                }
+                seen = e;
+            }
+        }
+        cur
+    };
+    let start = take(first);
+    let (mut dir, mut prev) = ("Down", start);
+    for _ in 0..80 {
+        let cur = take(&step_and_capture(t, h, dir));
         if cur.is_none() || (dir == "Down" && cur == start) {
             break;
         }
@@ -2373,7 +2425,12 @@ fn claude_version(bin: &Path) -> String {
 struct ModelsCache {
     version: String,
     models: Vec<ModelOpt>,
+    /// Qué se guarda de cada modelo: una caché de antes (sin el effort) se vuelve a leer.
+    #[serde(default)]
+    format: u32,
 }
+
+const MODELS_FORMAT: u32 = 2;
 
 fn cached_models(core: &Core, ver: &str) -> Option<Vec<ModelOpt>> {
     if let Some((v, m)) = &core.opts.lock().unwrap().models {
@@ -2382,7 +2439,7 @@ fn cached_models(core: &Core, ver: &str) -> Option<Vec<ModelOpt>> {
         }
     }
     let c: ModelsCache = serde_json::from_str(&std::fs::read_to_string(paths::models_cache()).ok()?).ok()?;
-    if c.version != ver || c.models.is_empty() {
+    if c.version != ver || c.models.is_empty() || c.format != MODELS_FORMAT {
         return None;
     }
     core.opts.lock().unwrap().models = Some((c.version, c.models.clone()));
@@ -2391,6 +2448,36 @@ fn cached_models(core: &Core, ver: &str) -> Option<Vec<ModelOpt>> {
 
 /// Una consulta a la vez (el arranque en segundo plano y el desplegable pueden coincidir).
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Effort que trae el modelo `id` («claude-opus-5-5», que el selector llama `name`, «Opus 5.5»)
+/// por sí solo, sin elegirlo a mano: el guardado para él en los ajustes de Claude Code
+/// (`modelSettings`) o, si no hay, el que enseñaba su fila del selector en la sesión oculta.
+fn own_effort(settings: &Value, models: &[ModelOpt], id: &str, name: &str) -> Option<String> {
+    if let Some(e) = settings["modelSettings"][id]["effortLevel"].as_str().filter(|e| !e.is_empty()) {
+        return Some(e.to_string());
+    }
+    models.iter().find(|m| !name.is_empty() && m.label == name)?.effort.clone()
+}
+
+/// `own_effort` con los ajustes de ahora y los modelos ya leídos, sean de la versión que sean: no
+/// se lanza nada (ni la sesión oculta ni `claude --version`, que haría esperar a la reanudación),
+/// y el effort de cada modelo apenas cambia de una versión a otra.
+fn model_effort(core: &Core, id: &str, name: &str) -> Option<String> {
+    let settings = std::fs::read_to_string(paths::claude_dir().join("settings.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let mut models = core.opts.lock().unwrap().models.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
+    if models.is_empty() {
+        models = std::fs::read_to_string(paths::models_cache())
+            .ok()
+            .and_then(|s| serde_json::from_str::<ModelsCache>(&s).ok())
+            .filter(|c| c.format == MODELS_FORMAT)
+            .map(|c| c.models)
+            .unwrap_or_default();
+    }
+    own_effort(&settings, &models, id, name)
+}
 
 /// Modelos de la versión instalada de Claude Code: los guardados o, si ha cambiado de versión,
 /// los que da la sesión oculta.
@@ -2404,9 +2491,10 @@ pub fn models_now(core: &Core) -> Result<Vec<ModelOpt>, String> {
         return Ok(m);
     }
     let list = probe_models(&core.tmux, &core.claude)?;
-    log(&format!("modelos de Claude Code {ver}: {}", list.iter().map(|m| m.label.as_str()).collect::<Vec<_>>().join(", ")));
+    let shown = |m: &ModelOpt| m.effort.as_ref().map_or_else(|| m.label.clone(), |e| format!("{} ({e})", m.label));
+    log(&format!("modelos de Claude Code {ver}: {}", list.iter().map(shown).collect::<Vec<_>>().join(", ")));
     core.opts.lock().unwrap().models = Some((ver.clone(), list.clone()));
-    if let Ok(s) = serde_json::to_string_pretty(&ModelsCache { version: ver, models: list.clone() }) {
+    if let Ok(s) = serde_json::to_string_pretty(&ModelsCache { version: ver, models: list.clone(), format: MODELS_FORMAT }) {
         let _ = std::fs::write(paths::models_cache(), s);
     }
     Ok(list)
@@ -3318,6 +3406,35 @@ mod tests {
         assert_eq!(cur, Some(1));
         // Sin cabecera a la vista (no debería pasar), «0.9» tampoco cuenta como fila.
         assert!(super::picker_rows("  0.9 → Oficina\n").0.is_empty());
+    }
+
+    #[test]
+    fn model_picker_effort() {
+        use super::picker_effort;
+        let head = "  Select model\n  Your pick is the default for new sessions. For other models, use --model.\n    1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks\n  ❯ 2.  Opus 5.5 ✔             For complex work and everyday tasks\n    ▸   More models\n";
+        let foot = "  s to use this session only · Enter to save · Esc to cancel\n";
+        let with = |l: &str| format!("{head}{l}\n{foot}");
+        assert_eq!(picker_effort(&with("  ◉ xHigh effort ←/→ to adjust")).as_deref(), Some("xhigh"));
+        assert_eq!(picker_effort(&with("  ◐ Medium effort (default) ←/→ to adjust")).as_deref(), Some("medium"));
+        assert_eq!(picker_effort(&with("  ◈ Max effort ←/→ to adjust")).as_deref(), Some("max"));
+        assert_eq!(picker_effort(&format!("{head}{foot}")), None);
+        // Lo que diga la conversación encima del selector no cuenta.
+        assert_eq!(picker_effort(&format!("  ● High effort ←/→ to adjust\n{head}{foot}")), None);
+    }
+
+    #[test]
+    fn own_effort_of_model() {
+        use super::{own_effort, ModelOpt};
+        let m = |n, label: &str, effort: Option<&str>| ModelOpt { n, label: label.into(), desc: String::new(), effort: effort.map(String::from) };
+        let models = vec![m(2, "Opus 5.5", Some("xhigh")), m(3, "Fable 5.2", Some("medium")), m(4, "Sonnet 5.5", None)];
+        let settings = serde_json::json!({ "modelSettings": { "claude-opus-5-5": { "effortLevel": "high" } } });
+        // Lo guardado para el modelo manda (puede haber cambiado después de leer el selector).
+        assert_eq!(own_effort(&settings, &models, "claude-opus-5-5", "Opus 5.5").as_deref(), Some("high"));
+        // Sin nada guardado, el que enseñaba su fila del selector.
+        assert_eq!(own_effort(&settings, &models, "claude-fable-5-2", "Fable 5.2").as_deref(), Some("medium"));
+        // Sin saberlo, nada (al reanudar se pasa entonces el que tenía, como antes).
+        assert_eq!(own_effort(&settings, &models, "claude-sonnet-5-5", "Sonnet 5.5"), None);
+        assert_eq!(own_effort(&serde_json::Value::Null, &[], "claude-fable-5-2", "Fable 5.2"), None);
     }
 
     /// Prueba real: arranca la sesión oculta y lee el selector (`cargo test -- --ignored sonda`).
