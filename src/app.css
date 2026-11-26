@@ -1548,6 +1548,13 @@ pre.output {
 .fill.bad {
   background: var(--bad);
 }
+/* Cuota agotada. En el tema oscuro, con borde: el negro casi no se distingue del fondo. */
+.fill.full {
+  background: #000;
+}
+:root[data-theme='dark'] .fill.full {
+  box-shadow: inset 0 0 0 1px var(--muted);
+}
 
 /* ── modales y avisos ── */
 .modal-bg {

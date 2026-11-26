@@ -201,6 +201,10 @@
   function level(p: number): string {
     return p >= 85 ? 'bad' : p >= 60 ? 'warn' : 'ok';
   }
+  /** Las cuotas, además, en negro al llegar al 100% (el que se enseña, redondeado). */
+  function quotaLevel(p: number): string {
+    return Math.round(p) >= 100 ? 'full' : level(p);
+  }
   function reset(w: RateWindow | undefined, withDay: boolean): string {
     if (!w?.resets_at) return '';
     const d = new Date(w.resets_at * 1000);
@@ -301,7 +305,7 @@
   {#if five}
     <span class="seg" title="Cuota de 5 horas">
       5h
-      <span class="bar"><span class="fill {level(fivePct)}" style="width:{fivePct}%"></span></span>
+      <span class="bar"><span class="fill {quotaLevel(fivePct)}" style="width:{fivePct}%"></span></span>
       {fivePct}% <span class="muted">↻ {reset(five, false)}</span>
     </span>
   {/if}
@@ -312,11 +316,11 @@
       7d
       {#if scoped.length}
         <span class="bar stacked">
-          <span class="track"><span class="fill {level(scoped[0].percent)}" style="width:{Math.min(100, scoped[0].percent)}%"></span></span>
-          <span class="track"><span class="fill {level(sevenPct)}" style="width:{sevenPct}%"></span></span>
+          <span class="track"><span class="fill {quotaLevel(scoped[0].percent)}" style="width:{Math.min(100, scoped[0].percent)}%"></span></span>
+          <span class="track"><span class="fill {quotaLevel(sevenPct)}" style="width:{sevenPct}%"></span></span>
         </span>
       {:else}
-        <span class="bar"><span class="fill {level(sevenPct)}" style="width:{sevenPct}%"></span></span>
+        <span class="bar"><span class="fill {quotaLevel(sevenPct)}" style="width:{sevenPct}%"></span></span>
       {/if}
       {sevenPct}% <span class="muted">↻ {reset(seven, true)}</span>
     </span>
