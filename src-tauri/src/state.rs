@@ -10,6 +10,10 @@ use crate::paths;
 pub struct Settings {
     pub autostop: bool,
     pub autostop_minutes: u64,
+    /// Detener las sesiones en espera con la actividad más antigua cuando queda poca RAM.
+    pub memstop: bool,
+    /// «Poca»: menos de este % de la RAM disponible.
+    pub memstop_percent: u64,
     pub sidebar_width: u32,
     /// Sesión tmux (servidor por defecto) donde viven las sesiones: `tmux a -t <nombre>`.
     pub tmux_session: String,
@@ -41,6 +45,8 @@ impl Default for Settings {
         Self {
             autostop: false,
             autostop_minutes: 60,
+            memstop: true,
+            memstop_percent: 15,
             sidebar_width: 290,
             tmux_session: crate::tmux::DEFAULT_SESSION.to_string(),
             notes_open: true,

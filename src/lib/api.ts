@@ -100,7 +100,26 @@ export interface Settings {
   sessionOrder: 'manual' | 'recent';
   /** Modo de permisos con el que arrancan las sesiones nuevas ('' = el de Claude Code). */
   newSessionMode: string;
+  /** Detener las sesiones en espera con la actividad más antigua cuando queda poca RAM. */
+  memstop: boolean;
+  /** «Poca»: menos de este % de la RAM disponible. */
+  memstopPercent: number;
 }
+
+/** Memoria del sistema y de cada sesión viva (evento `mem`, cada pocos segundos). En bytes. */
+export interface MemView {
+  total: number;
+  available: number;
+  swapTotal: number;
+  swapFree: number;
+  /** Clave de sesión → su proceso con todos sus descendientes (RAM + swap). */
+  sessions: Record<string, number>;
+  /** Desde aquí, una sesión ocupa más de lo normal. */
+  heavy: number;
+}
+
+/** Bytes en GB, con un decimal y coma: «2,4 GB». */
+export const gb = (b: number) => `${(b / 2 ** 30).toFixed(1).replace('.', ',')} GB`;
 
 export interface RateWindow {
   used_percentage?: number;

@@ -1,4 +1,5 @@
 mod app;
+mod mem;
 mod notify;
 mod paths;
 mod pty;

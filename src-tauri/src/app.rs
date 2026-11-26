@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::mem;
 use crate::paths;
 use crate::pty::Pty;
 use crate::registry::{self, RegEntry};
@@ -3332,6 +3333,12 @@ fn poll_transcript(app: &AppHandle, core: &Core, tick: u64) {
     }
 }
 
+/// Sesión que ccdesk puede detener por su cuenta: gestionada, esperando sin nada suyo corriendo
+/// (bash en segundo plano, subagentes…), sin «∞» y que no es la abierta.
+fn stoppable(v: &SessionView, active: Option<&str>) -> bool {
+    v.managed && v.status == "idle" && !v.background && !v.exempt && active != Some(v.key.as_str())
+}
+
 fn autostop(core: &Core) {
     let (on, mins, since) = {
         let p = core.persist.lock().unwrap();
@@ -3344,13 +3351,7 @@ fn autostop(core: &Core) {
     let active = core.active.lock().unwrap().clone();
     let views = core.views.lock().unwrap().clone();
     let now = now_ms();
-    for v in views.iter().filter(|v| {
-        v.managed
-            && v.status == "idle"
-            && !v.background
-            && !v.exempt
-            && active.as_deref() != Some(v.key.as_str())
-    }) {
+    for v in views.iter().filter(|v| stoppable(v, active.as_deref())) {
         // Inactiva desde lo último entre: su actividad, que ccdesk la gestiona y el arranque
         // de la app (adoptar una sesión parada hace horas no debe detenerla al momento).
         let idle_since = v
@@ -3364,11 +3365,75 @@ fn autostop(core: &Core) {
     }
 }
 
+/// Memoria del sistema y de cada sesión viva, para la barra inferior y la lista de sesiones.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MemView {
+    pub total: u64,
+    pub available: u64,
+    pub swap_total: u64,
+    pub swap_free: u64,
+    /// Clave de sesión → bytes de su proceso con todos sus descendientes (RAM + swap).
+    pub sessions: HashMap<String, u64>,
+    /// Desde aquí, una sesión ocupa más de lo normal (icono en la lista).
+    pub heavy: u64,
+}
+
+/// Una sesión ocupa ~1 GB con sus servidores MCP; el doble ya es mucho.
+const HEAVY_BYTES: u64 = 2 << 30;
+/// Tras detener una sesión por falta de memoria, lo que se espera a que se libere antes de
+/// mirar si hace falta detener otra.
+const MEMSTOP_PAUSE_MS: u64 = 30_000;
+
+fn gb(b: u64) -> String {
+    format!("{:.1}", b as f64 / (1u64 << 30) as f64).replace('.', ",")
+}
+
+/// Mide la memoria y se la manda a la interfaz. Si queda poca (y está activado), detiene la
+/// sesión en espera con la actividad más antigua: una cada `MEMSTOP_PAUSE_MS` mientras falte.
+fn mem_tick(app: &AppHandle, core: &Core, pause_until: &mut u64) {
+    let Some(sys) = mem::system() else { return };
+    let views = core.views.lock().unwrap().clone();
+    let pids: Vec<u32> = views.iter().filter_map(|v| v.pid).collect();
+    let per_pid = mem::trees(&pids);
+    let sessions = views.iter().filter_map(|v| Some((v.key.clone(), *per_pid.get(&v.pid?)?))).collect();
+    let _ = app.emit(
+        "mem",
+        MemView {
+            total: sys.total,
+            available: sys.available,
+            swap_total: sys.swap_total,
+            swap_free: sys.swap_free,
+            sessions,
+            heavy: HEAVY_BYTES,
+        },
+    );
+
+    let (on, pct) = {
+        let p = core.persist.lock().unwrap();
+        (p.settings.memstop, p.settings.memstop_percent)
+    };
+    let now = now_ms();
+    let low = sys.available.saturating_mul(100) < sys.total.saturating_mul(pct);
+    if !on || !low || now < *pause_until {
+        return;
+    }
+    let active = core.active.lock().unwrap().clone();
+    let Some(v) = views.iter().filter(|v| stoppable(v, active.as_deref())).min_by_key(|v| v.last_activity) else {
+        return;
+    };
+    log(&format!("memoria: detener {} ({}), quedan {} GB de {}", v.key, v.title, gb(sys.available), gb(sys.total)));
+    graceful_stop(core, &v.key);
+    *pause_until = now + MEMSTOP_PAUSE_MS;
+    let _ = app.emit("toast", format!("Detenida «{}» para liberar memoria: quedaban {} GB libres", v.title, gb(sys.available)));
+}
+
 pub fn spawn_poller(app: AppHandle, core: Shared) {
     std::thread::spawn(move || {
         let mut tick: u64 = 0;
         let mut notifier = crate::notify::Notifier::default();
         let mut idle_since = HashMap::new();
+        let mut memstop_pause = 0;
         loop {
             poll_transcript(&app, &core, tick);
             if tick.is_multiple_of(3) {
@@ -3387,6 +3452,9 @@ pub fn spawn_poller(app: AppHandle, core: Shared) {
             }
             if tick % 75 == 74 {
                 autostop(&core);
+            }
+            if tick % 12 == 6 {
+                mem_tick(&app, &core, &mut memstop_pause);
             }
             tick = tick.wrapping_add(1);
             std::thread::sleep(Duration::from_millis(400));

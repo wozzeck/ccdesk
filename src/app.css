@@ -1927,6 +1927,13 @@ details.agent-sec .msg {
   font-size: 12px;
   cursor: help;
 }
+/* Sesión que ocupa más memoria de lo normal. */
+.ram {
+  flex: none;
+  display: inline-flex;
+  color: var(--warn);
+  cursor: help;
+}
 .group-row {
   display: flex;
   align-items: center;

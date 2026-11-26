@@ -1,7 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
-  import { api, errText, type ChangeResult, type PendingChange, type RateWindow, type SessionView, type Snapshot } from './api';
+  import {
+    api,
+    errText,
+    gb,
+    type ChangeResult,
+    type MemView,
+    type PendingChange,
+    type RateWindow,
+    type SessionView,
+    type Snapshot,
+  } from './api';
   import Dropdown from './Dropdown.svelte';
   import { MODE_NAMES } from './modes';
 
@@ -14,11 +24,15 @@
     queued?: PendingChange;
     mode: string | null;
     allowYolo: boolean;
+    /** Memoria del sistema y de cada sesión (null hasta la primera medida). */
+    mem: MemView | null;
+    /** % de RAM libre por debajo del cual se detienen sesiones en espera (0: desactivado). */
+    memstop: number;
     now: number;
     onToast: (m: string) => void;
     ask: (msg: string, ok?: string) => Promise<boolean>;
   }
-  let { status, quota, usage, session, queued, mode, allowYolo, now, onToast, ask }: Props = $props();
+  let { status, quota, usage, session, queued, mode, allowYolo, mem, memstop, now, onToast, ask }: Props = $props();
 
   const TZ = 'Europe/Madrid';
   // MODE_NAMES sólo da los nombres; las opciones son las que ofrece la sesión.
@@ -201,6 +215,26 @@
   function level(p: number): string {
     return p >= 85 ? 'bad' : p >= 60 ? 'warn' : 'ok';
   }
+  /** RAM en uso: la que no está disponible (la caché que el sistema puede soltar no cuenta). */
+  const memPct = $derived(mem && mem.total ? Math.round((1 - mem.available / mem.total) * 100) : 0);
+  /** En rojo desde donde se empiezan a detener sesiones (o desde el 85 % si está desactivado). */
+  const memLevel = $derived.by(() => {
+    const bad = 100 - (memstop || 15);
+    return memPct >= bad ? 'bad' : memPct >= bad - 10 ? 'warn' : 'ok';
+  });
+  const memTitle = $derived.by(() => {
+    if (!mem) return '';
+    const live = Object.values(mem.sessions);
+    const lines = [`RAM: ${gb(mem.total - mem.available)} en uso de ${gb(mem.total)} · ${gb(mem.available)} disponibles`];
+    if (mem.swapTotal) lines.push(`Swap: ${gb(mem.swapTotal - mem.swapFree)} en uso de ${gb(mem.swapTotal)}`);
+    lines.push(`Sesiones vivas: ${live.length}, ${gb(live.reduce((a, b) => a + b, 0))} con sus procesos (RAM + swap)`);
+    lines.push(
+      memstop
+        ? `Con menos del ${memstop} % libre se detienen las sesiones en espera más antiguas.`
+        : 'Detener sesiones por falta de memoria: desactivado (Preferencias › Memoria).',
+    );
+    return lines.join('\n');
+  });
   /** Las cuotas, además, en negro al llegar al 100% (el que se enseña, redondeado). */
   function quotaLevel(p: number): string {
     return Math.round(p) >= 100 ? 'full' : level(p);
@@ -302,6 +336,14 @@
     <span class="seg muted">sin datos de statusline todavía</span>
   {/if}
   <span class="spacer"></span>
+  {#if mem}
+    <span class="seg" title={memTitle}>
+      RAM
+      <span class="bar"><span class="fill {memLevel}" style="width:{memPct}%"></span></span>
+      {memPct}%
+    </span>
+    {#if five || seven}<span class="seg muted">·</span>{/if}
+  {/if}
   {#if five}
     <span class="seg" title="Cuota de 5 horas">
       5h

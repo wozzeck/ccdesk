@@ -10,6 +10,7 @@
     type SessionView,
     type Settings,
     type AgentRow,
+    type MemView,
   } from './lib/api';
   import Sidebar from './lib/Sidebar.svelte';
   import Icon from './lib/Icon.svelte';
@@ -30,6 +31,8 @@
   import { getCurrentWebview } from '@tauri-apps/api/webview';
 
   let snap = $state<Snapshot | null>(null);
+  /** Memoria del sistema y de cada sesión (llega cada pocos segundos). */
+  let mem = $state<MemView | null>(null);
   let activeKey = $state<string | null>(null);
   let unread = $state<Record<string, boolean>>({});
   /** «Sin leer» de una sesión. Se guarda en el estado de la app: sigue al volver a abrirla. */
@@ -506,6 +509,7 @@
     // Avisos de lo que hace el backend por su cuenta (p. ej. un cambio de modelo encolado que no
     // se ha podido aplicar).
     const unToast = listen<string>('toast', (e) => toast(e.payload));
+    const unMem = listen<MemView>('mem', (e) => (mem = e.payload));
     api
       .snapshot()
       .then((s) => {
@@ -545,6 +549,7 @@
       un.then((f) => f());
       unFocus.then((f) => f());
       unToast.then((f) => f());
+      unMem.then((f) => f());
       clearInterval(timer);
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('wheel', onWheel, true);
@@ -559,6 +564,7 @@
       <Sidebar
         bind:this={sidebar}
         {snap}
+        {mem}
         {activeKey}
         {unread}
         {now}
@@ -680,6 +686,8 @@
       queued={active ? snap?.pending?.[active.key] : undefined}
       mode={snap?.activeMode ?? null}
       allowYolo={snap?.settings.allowYolo ?? true}
+      {mem}
+      memstop={snap?.settings.memstop ? snap.settings.memstopPercent : 0}
       {now}
       onToast={toast}
       {ask}

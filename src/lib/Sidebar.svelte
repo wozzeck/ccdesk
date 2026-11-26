@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
-  import type { AgentRow, SearchHit, SessionView, Snapshot } from './api';
-  import { api, shortPath, ago, BUSY, ATTENTION } from './api';
+  import type { AgentRow, MemView, SearchHit, SessionView, Snapshot } from './api';
+  import { api, shortPath, ago, gb, BUSY, ATTENTION } from './api';
   import { fullDate } from './clock.svelte';
   import Spinner from './Spinner.svelte';
 
   interface Props {
     snap: Snapshot;
+    /** Memoria de cada sesión viva (icono en las que ocupan más de lo normal). */
+    mem: MemView | null;
     activeKey: string | null;
     unread: Record<string, boolean>;
     now: number;
@@ -21,6 +23,7 @@
   }
   let {
     snap,
+    mem,
     activeKey,
     unread,
     now,
@@ -497,6 +500,19 @@
         {#if s.notes}<span class="nbadge" title="{s.notes} to-do{s.notes === 1 ? '' : 's'} pendiente{s.notes === 1 ? '' : 's'}">✎{s.notes}</span>{/if}
         {#if s.dupes.length}
           <span class="dupe" title="Abierta también en otro proceso (escriben en el mismo transcript):&#10;{s.dupes.join('\n')}">⚠</span>
+        {/if}
+        {#if mem && (mem.sessions[s.key] ?? 0) >= mem.heavy}
+          <span
+            class="ram"
+            title="Ocupa {gb(mem.sessions[s.key])} con sus procesos (RAM + swap); una sesión suele ocupar en torno a 1 GB"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"
+              ><rect x="1" y="4" width="14" height="6.5" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.3" /><path
+                d="M3 6h2.4v2.6H3zM6.8 6h2.4v2.6H6.8zM10.6 6h2.4v2.6h-2.4z"
+                fill="currentColor"
+              /><path d="M3 10.5v2M5 10.5v2M7 10.5v2M9 10.5v2M11 10.5v2M13 10.5v2" stroke="currentColor" stroke-width="1.1" /></svg
+            >
+          </span>
         {/if}
         <span class="when" title={s.stoppedAt ? `Detenida el ${fullDate(s.stoppedAt)}` : undefined}
           >{ago(s.lastActivity, now)}{s.exempt ? ' ∞' : ''}</span

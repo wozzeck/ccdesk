@@ -18,9 +18,11 @@ Cliente de escritorio ligero (Tauri v2 + Svelte) para trabajar con varias sesion
   resultado, transcript completo en panel lateral) y, mientras trabajan, en árbol bajo su
   sesión en el panel izquierdo.
 - Panel lateral: orden por recencia, **arrastrar para reordenar**, **fijar** arriba,
-  renombrar, detener/reanudar (`claude --resume`) y **auto-detención** por inactividad.
-- Avisos: spinner (trabajando), `!` (requiere atención), punto azul (respuesta sin leer).
-- Barra inferior: modelo, effort, contexto, coste y cuotas 5h/7d.
+  renombrar, detener/reanudar (`claude --resume`) y **auto-detención** por inactividad o por
+  falta de RAM (con menos del 15 % libre, la inactiva más antigua; ajustable).
+- Avisos: spinner (trabajando), `!` (requiere atención), punto azul (respuesta sin leer) y un
+  icono de memoria en las sesiones que ocupan más de 2 GB con sus procesos.
+- Barra inferior: modelo, effort, contexto, coste, cuotas 5h/7d y RAM en uso.
 - Recuerda tamaño, posición y maximizado de la ventana (se guarda al cambiar, no sólo al cerrar).
 - Sesiones «externas» (claude vivos fuera de ccdesk) en un grupo aparte, sólo lectura.
   **Adoptar** mueve su ventana de tmux a la sesión de ccdesk sin reiniciar el proceso.

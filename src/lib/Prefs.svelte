@@ -48,6 +48,7 @@
         ...draft,
         tmuxSession: draft.tmuxSession.trim() || 'claude',
         autostopMinutes: Math.max(5, Number(draft.autostopMinutes) || 60),
+        memstopPercent: Math.min(50, Math.max(5, Number(draft.memstopPercent) || 15)),
       });
     } catch (x) {
       err = errText(x);
@@ -151,8 +152,16 @@
             <input class="mins" type="number" min="5" step="5" bind:value={draft.autostopMinutes} />
             min
           </label>
+          <label class="row">
+            <input type="checkbox" bind:checked={draft.memstop} />
+            Con menos del
+            <input class="mins" type="number" min="5" max="50" step="5" bind:value={draft.memstopPercent} />
+            % de RAM libre, detener las inactivas más antiguas
+          </label>
           <p class="hint">
-            Nunca se detiene la sesión abierta ni las marcadas «∞». Una detenida se reanuda con ▶.
+            Por falta de memoria se detiene una cada 30 s, la que lleva más tiempo sin actividad, hasta que
+            vuelve a haber RAM libre. Nunca se detiene la sesión abierta, las marcadas «∞» ni las que
+            trabajan, preguntan o tienen algo corriendo. Una detenida se reanuda con ▶.
           </p>
         </section>
       </div>
