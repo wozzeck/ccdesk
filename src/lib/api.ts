@@ -17,6 +17,9 @@ export interface SessionView {
   lastActivity: number;
   /** Cuándo se detuvo (sólo detenidas). */
   stoppedAt: number | null;
+  /** Cuándo arrancó el proceso de Claude Code que la lleva ahora (null: sin proceso o sin saberlo).
+   *  Su cola de entrada vive en memoria: lo que tuviera el proceso anterior se perdió con él. */
+  procStartedAt: number | null;
   pid: number | null;
   tmuxPane: string | null;
   /** Otros procesos con la misma sesión abierta. */

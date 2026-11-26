@@ -300,6 +300,7 @@
         live={session.status !== 'stopped'}
         idle={session.status === 'idle'}
         showPending
+        queueSince={session.status === 'stopped' ? Infinity : (session.procStartedAt ?? 0)}
         sessionKey={session.key}
         cwd={session.cwd}
         {onToast}

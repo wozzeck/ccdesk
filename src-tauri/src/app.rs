@@ -132,6 +132,9 @@ pub struct SessionView {
     pub last_activity: u64,
     /// Cuándo se detuvo (sólo detenidas).
     pub stopped_at: Option<u64>,
+    /// Cuándo arrancó el proceso de Claude Code que la lleva ahora (de su registro). Su cola de
+    /// entrada vive en memoria: lo que tuviera el proceso anterior se perdió con él.
+    pub proc_started_at: Option<u64>,
     pub pid: Option<u32>,
     pub tmux_pane: Option<String>,
     /// Otros procesos con la misma sesión abierta (escriben en el mismo transcript).
@@ -1047,6 +1050,7 @@ pub fn build(core: &Core) -> Snapshot {
                 started_at: k.started_at,
                 last_activity: last,
                 stopped_at: k.stopped_at,
+                proc_started_at: reg.map(|r| r.started_at).filter(|&t| t > 0),
                 pid: reg.map(|r| r.pid).or(Some(w.pane_pid)),
                 tmux_pane: None,
                 dupes: vec![],
@@ -1094,6 +1098,7 @@ pub fn build(core: &Core) -> Snapshot {
                 started_at: k.started_at,
                 last_activity: stopped_activity(&k.sid, &k.cwd).or(k.stopped_at).unwrap_or(k.last_activity),
                 stopped_at: k.stopped_at,
+                proc_started_at: None,
                 pid: None,
                 tmux_pane: None,
                 dupes: vec![],
@@ -1131,6 +1136,7 @@ pub fn build(core: &Core) -> Snapshot {
             started_at: r.started_at,
             last_activity: r.status_updated_at.or(r.updated_at).unwrap_or(r.started_at),
             stopped_at: None,
+            proc_started_at: Some(r.started_at).filter(|&t| t > 0),
             pid: Some(r.pid),
             tmux_pane: r.tmux.clone(),
             dupes: vec![],
@@ -3969,7 +3975,7 @@ while True:
         let v = |key: &str, last: u64| super::SessionView {
             key: key.into(), sid: String::new(), cwd: String::new(), title: key.into(), status: "idle".into(),
             managed: true, external_kind: None, pinned: false, exempt: false, started_at: 0, last_activity: last,
-            stopped_at: None, pid: None, tmux_pane: None, dupes: vec![], location: None, notes: 0, agents: vec![], background: false, last_reply: None,
+            stopped_at: None, proc_started_at: None, pid: None, tmux_pane: None, dupes: vec![], location: None, notes: 0, agents: vec![], background: false, last_reply: None,
         };
         let views = || std::collections::HashMap::from([("p1", 10), ("p2", 99), ("a", 5), ("b", 50), ("c", 50), ("d", 70)]
             .map(|(k, t)| (k.to_string(), v(k, t))));

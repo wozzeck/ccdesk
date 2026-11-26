@@ -27,11 +27,20 @@ export interface Queued {
  * que no lo marcaban) se da por salida la primera, al llegar el siguiente apunte o un mensaje sin
  * marca de entrega; mientras tanto, lo recién salido sigue en la cola hasta que se escribe su
  * entrega.
+ * La cola vive en la memoria del proceso: si Claude Code se cierra con algo en ella (un aviso que
+ * esperaba al siguiente turno, p. ej.), se pierde sin que se apunte su salida. Por eso, con
+ * `since` (arranque del proceso actual, en ms), la réplica se vacía al llegar lo primero de ese
+ * proceso; con `since` infinito (no hay proceso) no queda nada en cola.
  * `textOf`: texto de un apunte que no lo trae (por su índice en `items`).
  */
-export function queueReplica(items: Item[], textOf: (idx: number) => string = () => ''): Queued[] {
+export function queueReplica(
+  items: Item[],
+  textOf: (idx: number) => string = () => '',
+  since = 0,
+): Queued[] {
   const q: Queued[] = [];
   let owed = 0; // salidas a la espera de su entrega
+  let current = since <= 0; // ya ha llegado algo del proceso actual (o no se sabe cuándo arrancó)
   const drop = (ok: (x: Queued) => boolean) => {
     const k = q.findIndex(ok);
     if (k >= 0) q.splice(k, 1);
@@ -48,6 +57,11 @@ export function queueReplica(items: Item[], textOf: (idx: number) => string = ()
     return true;
   };
   items.forEach((it, idx) => {
+    if (!current && Date.parse(it.ts) >= since) {
+      current = true;
+      q.length = 0;
+      owed = 0;
+    }
     switch (it.kind) {
       case 'queueAdd':
         settle();
@@ -101,5 +115,5 @@ export function queueReplica(items: Item[], textOf: (idx: number) => string = ()
         break;
     }
   });
-  return q;
+  return current ? q : [];
 }

@@ -32,6 +32,9 @@
     idle?: boolean;
     /** Enseñar los mensajes en cola (sólo en la conversación principal). */
     showPending?: boolean;
+    /** Arranque del proceso de Claude Code (ms; infinito si no hay): lo encolado antes ya no está
+     *  en su cola (queue.ts). */
+    queueSince?: number;
     /** Clave de la sesión (para las burbujas provisionales de lo recién enviado). */
     sessionKey?: string;
     /** Carpeta de la sesión: base de las rutas relativas que no se encuentran de otro modo. */
@@ -46,6 +49,7 @@
     live,
     idle = false,
     showPending = false,
+    queueSince = 0,
     sessionKey = '',
     cwd = '',
     onToast,
@@ -221,7 +225,11 @@
   // espera (pero ocupa su sitio en la cola).
   const pending = $derived.by(() => {
     if (!showPending) return [];
-    return queueReplica(items, (idx) => blankText.get(idx) || outbox.recall(sessionKey, items[idx].ts) || '')
+    return queueReplica(
+      items,
+      (idx) => blankText.get(idx) || outbox.recall(sessionKey, items[idx].ts) || '',
+      queueSince,
+    )
       .filter((x) => !x.system && !!x.text.trim() && !held.has(x.idx))
       .map((x) => ({ text: x.text, id: startIndex + x.idx, at: Date.parse(items[x.idx].ts) || 0 }));
   });
