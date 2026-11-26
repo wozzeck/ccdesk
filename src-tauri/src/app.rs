@@ -3381,6 +3381,8 @@ pub struct MemView {
     pub swap_free: u64,
     /// Clave de sesión → bytes de su proceso con todos sus descendientes (RAM + swap).
     pub sessions: HashMap<String, u64>,
+    /// RAM (sin swap) de todas las sesiones con sus procesos: cuánta de la usada es de Claude.
+    pub claude_ram: u64,
     /// Desde aquí, una sesión ocupa más de lo normal (icono en la lista).
     pub heavy: u64,
 }
@@ -3402,7 +3404,11 @@ fn mem_tick(app: &AppHandle, core: &Core, pause_until: &mut u64) {
     let views = core.views.lock().unwrap().clone();
     let pids: Vec<u32> = views.iter().filter_map(|v| v.pid).collect();
     let per_pid = mem::trees(&pids);
-    let sessions = views.iter().filter_map(|v| Some((v.key.clone(), *per_pid.get(&v.pid?)?))).collect();
+    let sessions = views
+        .iter()
+        .filter_map(|v| per_pid.get(&v.pid?).map(|u| (v.key.clone(), u.ram + u.swap)))
+        .collect();
+    let claude_ram = per_pid.values().map(|u| u.ram).sum();
     let _ = app.emit(
         "mem",
         MemView {
@@ -3411,6 +3417,7 @@ fn mem_tick(app: &AppHandle, core: &Core, pause_until: &mut u64) {
             swap_total: sys.swap_total,
             swap_free: sys.swap_free,
             sessions,
+            claude_ram,
             heavy: HEAVY_BYTES,
         },
     );

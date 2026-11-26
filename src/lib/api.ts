@@ -114,6 +114,8 @@ export interface MemView {
   swapFree: number;
   /** Clave de sesión → su proceso con todos sus descendientes (RAM + swap). */
   sessions: Record<string, number>;
+  /** RAM (sin swap) de todas las sesiones con sus procesos: cuánta de la usada es de Claude. */
+  claudeRam: number;
   /** Desde aquí, una sesión ocupa más de lo normal. */
   heavy: number;
 }

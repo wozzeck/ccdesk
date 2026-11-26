@@ -1548,6 +1548,23 @@ pre.output {
 .fill.bad {
   background: var(--bad);
 }
+/* Barra en zonas (marcador de RAM): desde el 0, en sólido, la usada por las sesiones de Claude;
+   después, rayada, la del resto del sistema. */
+.bar.split {
+  display: inline-flex;
+}
+.bar.split .fill {
+  flex: none;
+}
+.fill.hatch.ok {
+  background: repeating-linear-gradient(135deg, var(--ok) 0 2px, transparent 2px 4px);
+}
+.fill.hatch.warn {
+  background: repeating-linear-gradient(135deg, var(--warn) 0 2px, transparent 2px 4px);
+}
+.fill.hatch.bad {
+  background: repeating-linear-gradient(135deg, var(--bad) 0 2px, transparent 2px 4px);
+}
 /* Cuota agotada. En el tema oscuro, con borde: el negro casi no se distingue del fondo. */
 .fill.full {
   background: #000;

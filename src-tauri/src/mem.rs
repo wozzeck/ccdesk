@@ -31,16 +31,26 @@ pub fn system() -> Option<System> {
     parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }
 
-/// Padre y memoria (RAM + swap, en bytes) de un proceso, de su `/proc/<pid>/status`. Los hilos
-/// del núcleo no tienen VmRSS: cuentan 0.
-fn parse_status(text: &str) -> Option<(u32, u64)> {
+/// Memoria de un proceso (o de varios sumados), en bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Usage {
+    /// En RAM (VmRSS).
+    pub ram: u64,
+    /// En swap (VmSwap).
+    pub swap: u64,
+}
+
+/// Padre y memoria de un proceso, de su `/proc/<pid>/status`. Los hilos del núcleo no tienen
+/// VmRSS: cuentan 0.
+fn parse_status(text: &str) -> Option<(u32, Usage)> {
     let ppid = text.lines().find_map(|l| l.strip_prefix("PPid:"))?.trim().parse().ok()?;
-    let mem = kb_line(text, "VmRSS").unwrap_or(0) + kb_line(text, "VmSwap").unwrap_or(0);
-    Some((ppid, mem))
+    let ram = kb_line(text, "VmRSS").unwrap_or(0);
+    let swap = kb_line(text, "VmSwap").unwrap_or(0);
+    Some((ppid, Usage { ram, swap }))
 }
 
 /// Memoria de cada raíz sumando la de todos sus descendientes. `procs`: pid → (padre, memoria).
-pub fn sum_trees(procs: &HashMap<u32, (u32, u64)>, roots: &[u32]) -> HashMap<u32, u64> {
+pub fn sum_trees(procs: &HashMap<u32, (u32, Usage)>, roots: &[u32]) -> HashMap<u32, Usage> {
     let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
     for (&pid, &(ppid, _)) in procs {
         kids.entry(ppid).or_default().push(pid);
@@ -49,9 +59,12 @@ pub fn sum_trees(procs: &HashMap<u32, (u32, u64)>, roots: &[u32]) -> HashMap<u32
         .iter()
         .filter(|r| procs.contains_key(r))
         .map(|&root| {
-            let (mut total, mut stack) = (0, vec![root]);
+            let (mut total, mut stack) = (Usage::default(), vec![root]);
             while let Some(p) = stack.pop() {
-                total += procs.get(&p).map_or(0, |x| x.1);
+                if let Some((_, u)) = procs.get(&p) {
+                    total.ram += u.ram;
+                    total.swap += u.swap;
+                }
                 stack.extend(kids.get(&p).into_iter().flatten().copied());
             }
             (root, total)
@@ -61,8 +74,8 @@ pub fn sum_trees(procs: &HashMap<u32, (u32, u64)>, roots: &[u32]) -> HashMap<u32
 
 /// Memoria de cada proceso de `roots` con sus descendientes. RSS suma también las páginas
 /// compartidas (el binario de Claude Code, p. ej.): es una cota, no lo que se libera exacto.
-pub fn trees(roots: &[u32]) -> HashMap<u32, u64> {
-    let procs: HashMap<u32, (u32, u64)> = std::fs::read_dir("/proc")
+pub fn trees(roots: &[u32]) -> HashMap<u32, Usage> {
+    let procs: HashMap<u32, (u32, Usage)> = std::fs::read_dir("/proc")
         .into_iter()
         .flatten()
         .flatten()
@@ -92,13 +105,14 @@ mod tests {
     #[test]
     fn status_and_trees() {
         let st = "Name:\tclaude\nPPid:\t1947800\nVmRSS:\t  331776 kB\nVmSwap:\t   20480 kB\n";
-        assert_eq!(parse_status(st), Some((1947800, (331776 + 20480) * 1024)));
-        assert_eq!(parse_status("Name:\tkthreadd\nPPid:\t0\n"), Some((0, 0)));
+        assert_eq!(parse_status(st), Some((1947800, Usage { ram: 331776 * 1024, swap: 20480 * 1024 })));
+        assert_eq!(parse_status("Name:\tkthreadd\nPPid:\t0\n"), Some((0, Usage::default())));
         // 10 → 11 → 12, y 13 suelto; 99 no existe.
-        let procs = HashMap::from([(10, (1, 100)), (11, (10, 20)), (12, (11, 3)), (13, (1, 7))]);
+        let u = |ram, swap| Usage { ram, swap };
+        let procs = HashMap::from([(10, (1, u(100, 1))), (11, (10, u(20, 2))), (12, (11, u(3, 0))), (13, (1, u(7, 7)))]);
         let t = sum_trees(&procs, &[10, 11, 99]);
-        assert_eq!(t.get(&10), Some(&123));
-        assert_eq!(t.get(&11), Some(&23));
+        assert_eq!(t.get(&10), Some(&u(123, 3)));
+        assert_eq!(t.get(&11), Some(&u(23, 2)));
         assert!(!t.contains_key(&99));
     }
 }

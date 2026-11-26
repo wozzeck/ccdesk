@@ -13,6 +13,7 @@
     type Snapshot,
   } from './api';
   import Dropdown from './Dropdown.svelte';
+  import Icon from './Icon.svelte';
   import { MODE_NAMES } from './modes';
 
   interface Props {
@@ -217,6 +218,8 @@
   }
   /** RAM en uso: la que no está disponible (la caché que el sistema puede soltar no cuenta). */
   const memPct = $derived(mem && mem.total ? Math.round((1 - mem.available / mem.total) * 100) : 0);
+  /** La parte de Claude (sus sesiones con sus procesos), sobre el total como la usada. */
+  const claudePct = $derived(mem && mem.total ? Math.min(memPct, Math.round((mem.claudeRam / mem.total) * 100)) : 0);
   /** En rojo desde donde se empiezan a detener sesiones (o desde el 85 % si está desactivado). */
   const memLevel = $derived.by(() => {
     const bad = 100 - (memstop || 15);
@@ -224,10 +227,14 @@
   });
   const memTitle = $derived.by(() => {
     if (!mem) return '';
-    const live = Object.values(mem.sessions);
-    const lines = [`RAM: ${gb(mem.total - mem.available)} en uso de ${gb(mem.total)} · ${gb(mem.available)} disponibles`];
+    const used = mem.total - mem.available;
+    const n = Object.keys(mem.sessions).length;
+    const share = used > 0 ? Math.round((Math.min(mem.claudeRam, used) / used) * 100) : 0;
+    const lines = [
+      `RAM: ${gb(used)} en uso de ${gb(mem.total)} · ${gb(mem.available)} disponibles`,
+      `En sólido, Claude Code: ${gb(mem.claudeRam)} (${share} % de la usada), ${n} sesion${n === 1 ? '' : 'es'} con sus procesos; rayado, el resto del sistema`,
+    ];
     if (mem.swapTotal) lines.push(`Swap: ${gb(mem.swapTotal - mem.swapFree)} en uso de ${gb(mem.swapTotal)}`);
-    lines.push(`Sesiones vivas: ${live.length}, ${gb(live.reduce((a, b) => a + b, 0))} con sus procesos (RAM + swap)`);
     lines.push(
       memstop
         ? `Con menos del ${memstop} % libre se detienen las sesiones en espera más antiguas.`
@@ -338,8 +345,13 @@
   <span class="spacer"></span>
   {#if mem}
     <span class="seg" title={memTitle}>
-      RAM
-      <span class="bar"><span class="fill {memLevel}" style="width:{memPct}%"></span></span>
+      <Icon name="ram" size={15} />
+      <span class="bar split"
+        ><span class="fill {memLevel}" style="width:{claudePct}%"></span><span
+          class="fill hatch {memLevel}"
+          style="width:{memPct - claudePct}%"
+        ></span></span
+      >
       {memPct}%
     </span>
     {#if five || seven}<span class="seg muted">·</span>{/if}
